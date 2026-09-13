@@ -1,0 +1,438 @@
+/* 全局样式 */
+* {
+    margin: 0;
+    padding: 0;
+    box-sizing: border-box;
+    font-family: "Microsoft YaHei", "Segoe UI", sans-serif;
+}
+html, body {
+    width: 100%;
+    height: 100%;
+    overflow: hidden;
+    background: #e6e6e6;
+    user-select: none;
+    -webkit-user-select: none;
+}
+.hidden { display: none !important; }
+
+/* 主浏览区域 */
+#viewport {
+    position: absolute;
+    top: 0;
+    left: 0;
+    right: 0;
+    bottom: 26px; /* 预留状态栏 */
+    background: #e6e6e6;
+    overflow: hidden;
+}
+#stage-single, #stage-cartoon, #stage-choose {
+    position: absolute;
+    top: 0;
+    left: 0;
+    width: 100%;
+    height: 100%;
+}
+#img-single {
+    position: absolute;
+    transform-origin: center center;
+    /* 拍照带旋转标记（EXIF Orientation）的 JPG 交给浏览器摆正：from-image 是 Chromium 默认值，
+        显式写出以固定语义。Chromium 在绘制时直接按 EXIF 朝向输出，且 naturalWidth/Height
+        也返回摆正后的尺寸，与 canvas drawImage（始终按朝向绘制）保持同一套朝向；
+        JS 的 transform 只叠加用户手动旋转（State.curAngle 仅记录手动角度），
+        两处各转一次，避免重复旋转导致 90°/180° 错位。详见 util/raw-rotate.js 顶部说明。 */
+    image-orientation: from-image;
+}
+/* GIF 自绘播放画布：几何（left/top/width/height/transform）由脚本复制 #img-single 的内联样式，
+    播放 GIF 时替代 #img-single 显示，暂停时画面自然停住当前帧 */
+#gif-canvas {
+    position: absolute;
+    transform-origin: center center;
+    display: none;
+}
+#annot-canvas {
+    position: absolute;
+    top: 0;
+    left: 0;
+    z-index: 3;
+    /* 默认让出指针事件，仅在开启标记绘图时由脚本打开，避免遮挡其它模式交互 */
+    pointer-events: none;
+}
+
+/* 漫画模式 */
+.cartoon-img {
+    position: absolute;
+    left: 0;
+    width: 100%;
+    display: block;
+}
+
+/* 筛选模式 */
+.choose-div {
+    position: absolute;
+    top: 0;
+    height: 100%;
+    /* 放大后超出半个画面的部分裁剪掉，实现并排对比各自的取景框 */
+    overflow: hidden;
+    cursor: zoom-in;
+}
+/* 放大后可拖动平移 */
+.choose-div.choose-zoomed { cursor: grab; }
+.choose-div.choose-zoomed:active { cursor: grabbing; }
+.choose-info {
+    position: absolute;
+    bottom: 8px;
+    left: 0;
+    right: 0;
+    text-align: center;
+    font-size: 12px;
+    color: #fff;
+    text-shadow: 0 0 3px #000;
+    pointer-events: none;
+    background: rgba(0,0,0,0.5);
+    padding: 4px;
+}
+/* 筛选模式放大后的「还原大小」按钮 */
+#choose-restore {
+    position: absolute;
+    top: 10px;
+    left: 50%;
+    transform: translateX(-50%);
+    z-index: 6;
+    padding: 4px 14px;
+    font-size: 13px;
+    color: #fff;
+    background: rgba(0, 0, 0, 0.6);
+    border-radius: 4px;
+    cursor: pointer;
+    user-select: none;
+}
+#choose-restore:hover { background: rgba(0, 0, 0, 0.8); }
+/* 筛选模式：每张图右上角的删除按钮（与 Ctrl+点击效果相同） */
+.choose-del {
+    position: absolute;
+    top: 8px;
+    right: 8px;
+    z-index: 6;
+    padding: 2px 10px;
+    font-size: 12px;
+    color: #fff;
+    background: rgba(0, 0, 0, 0.6);
+    border-radius: 4px;
+    cursor: pointer;
+    user-select: none;
+}
+.choose-del:hover { background: rgba(200, 40, 40, 0.9); }
+/* 并排对比左侧那张：按钮左移，避开画面中央的「还原大小」与提示 */
+.choose-del.choose-del-shift { right: 52px; }
+
+/* 区域选择遮罩 */
+#sel-mask {
+    position: fixed;
+    top: 0;
+    left: 0;
+    width: 100%;
+    height: 100%;
+    z-index: 200; /* 高于工具栏/菜单/提示，保证截屏选择期间不被遮挡 */
+    background: #000;
+    cursor: crosshair;
+}
+#sel-canvas {
+    position: absolute;
+    top: 0;
+    left: 0;
+    width: 100%;
+    height: 100%;
+}
+/* 选区：独立 DOM 元素，不随画布重绘而丢失 */
+#sel-rect {
+    position: absolute;
+    border: 2px solid #ff0;
+    pointer-events: none;
+}
+#sel-hint {
+    position: absolute;
+    top: 8px;
+    left: 8px;
+    color: #eee;
+    background: rgba(0, 0, 0, 0.6);
+    font-size: 12px;
+    padding: 3px 10px;
+    border-radius: 4px;
+    pointer-events: none;
+}
+
+/* 焦点边框 */
+#focus-borders {
+    position: absolute;
+    z-index: 4;
+    pointer-events: none;
+    box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.18) inset;
+}
+
+/* Toast 提示 */
+#toast {
+    position: absolute;
+    top: 25%;
+    left: 50%;
+    transform: translate(-50%, -50%);
+    background: rgba(0,0,0,0.75);
+    color: #eee;
+    font-size: 13px;
+    padding: 6px 16px;
+    border-radius: 4px;
+    z-index: 90;
+    max-width: 80%;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+/* 当前浏览模式（状态栏显示，点击可弹出切换菜单） */
+#st-mode {
+    color: #7a4b00;
+    font-weight: bold;
+    cursor: pointer;
+    user-select: none;
+}
+#st-mode:hover { background: #d5d5d5; }
+
+/* 底部工具栏 */
+#toolbar {
+    position: absolute;
+    bottom: 34px;
+    left: 50%;
+    transform: translateX(-50%);
+    z-index: 30;
+    background: rgba(224,224,224,0.65);
+    border: 1px solid #cfcfcf;
+    border-radius: 6px;
+    padding: 4px 8px;
+    display: none;
+    white-space: nowrap;
+}
+#toolbar.show { display: inline-block; }
+.tb-btn {
+    display: inline-block;
+    text-align: center;
+    color: #444;
+    font-size: 11px;
+    padding: 2px 6px;
+    cursor: pointer;
+    border-radius: 4px;
+}
+.tb-btn:hover { background: #d5d5d5; color: #222; }
+.tb-btn:active { background: #e8a200; }
+.tb-btn img { display: block; width: 26px; height: 24px; margin-bottom: 1px; }
+
+/* 状态栏 */
+#statusbar {
+    position: absolute;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    height: 26px;
+    background: #e0e0e0;
+    color: #444;
+    font-size: 12px;
+    line-height: 26px;
+    border-top: 1px solid #cfcfcf;
+    display: inline-block;
+    white-space: nowrap;
+    overflow: hidden;
+}
+.st-item {
+    display: inline-block;
+    border-left: 1px solid #cfcfcf;
+    padding: 0 8px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    max-width: 260px;
+    vertical-align: bottom;
+}
+.st-item.stretch { max-width: none; }
+#st-info.stretch { flex: none; }
+/* st-info 无内容时隐藏，避免分隔线+内边距的空占位形成大片空白 */
+#st-info:empty { display: none; }
+
+/* 全屏时隐藏底部状态栏，视口占满整屏 */
+body.fullscreen #statusbar { display: none; }
+body.fullscreen #viewport { bottom: 0; }
+
+/* 右键菜单 */
+#ctxmenu {
+    position: fixed;
+    z-index: 100;
+    background: #fff;
+    border: 1px solid #ccc;
+    border-radius: 4px;
+    box-shadow: 0 4px 12px rgba(0,0,0,0.2);
+    min-width: 150px;
+    padding: 4px 0;
+}
+.cm-item {
+    position: relative;
+    padding: 6px 24px 6px 16px;
+    font-size: 13px;
+    cursor: pointer;
+    color: #333;
+    white-space: nowrap;
+}
+.cm-item:hover { background: #e8f0fe; }
+.cm-sep { height: 1px; background: #e0e0e0; margin: 4px 0; }
+
+/* 二级菜单：一级项仅作分类，悬停展开子菜单 */
+.cm-parent { padding-right: 30px; }
+.cm-arrow {
+    position: absolute;
+    right: 9px;
+    top: 50%;
+    margin-top: -9px;
+    height: 18px;
+    line-height: 18px;
+    color: #999;
+    font-size: 12px;
+}
+.cm-sub {
+    display: none;
+    position: absolute;
+    left: 100%;
+    top: -5px;
+    min-width: 170px;
+    background: #fff;
+    border: 1px solid #ccc;
+    border-radius: 4px;
+    box-shadow: 0 4px 12px rgba(0,0,0,0.2);
+    padding: 4px 0;
+    z-index: 101;
+}
+.cm-parent:hover > .cm-sub { display: block; }
+/* 靠近窗口右缘时子菜单向左展开，避免超出可视区域 */
+#ctxmenu.flip .cm-sub { left: auto; right: 100%; }
+
+/* 菜单中的当前模式标记：以文字颜色区分 */
+.cm-item.mode-active { color: #d29100; }
+
+/* 状态栏点击弹出的浏览模式切换菜单 */
+#modemenu {
+    position: fixed;
+    z-index: 102;
+    background: #fff;
+    border: 1px solid #ccc;
+    border-radius: 4px;
+    box-shadow: 0 4px 12px rgba(0,0,0,0.2);
+    min-width: 150px;
+    padding: 4px 0;
+}
+#modemenu .cm-item { padding: 6px 16px; }
+
+/* 模态对话框 */
+.modal {
+    position: fixed;
+    top: 0;
+    left: 0;
+    width: 100%;
+    height: 100%;
+    background: rgba(0,0,0,0.4);
+    z-index: 80;
+}
+.modal-box {
+    position: absolute;
+    top: 50%;
+    left: 50%;
+    transform: translate(-50%, -50%);
+    background: #fff;
+    border-radius: 6px;
+    padding: 16px 20px;
+    min-width: 260px;
+    box-shadow: 0 6px 20px rgba(0,0,0,0.3);
+}
+.modal-title { font-size: 16px; font-weight: bold; margin-bottom: 12px; }
+.modal-body { font-size: 13px; margin-bottom: 16px; }
+.modal-body label { display: inline-block; margin-right: 12px; }
+.ct-tip {
+    font-size: 12px;
+    color: #777;
+    line-height: 1.5;
+    margin-top: 8px;
+    padding-top: 6px;
+    border-top: 1px solid #eee;
+}
+.modal-btns { text-align: right; }
+.btn {
+    display: inline-block;
+    padding: 5px 16px;
+    font-size: 13px;
+    border: 1px solid #ccc;
+    background: #f5f5f5;
+    border-radius: 4px;
+    cursor: pointer;
+    margin-left: 8px;
+}
+.btn:hover { background: #e8e8e8; }
+.btn.primary { background: #e8a200; border-color: #d29100; color: #fff; }
+.btn.primary:hover { background: #d29100; }
+.modal-body input[type="number"] {
+    width: 70px;
+    border: 1px solid #ccc;
+    border-radius: 3px;
+    padding: 3px 6px;
+}
+
+/* 帮助对话框 */
+.modal-box.wide { width: 560px; max-width: 88vw; }
+#dlg-help .modal-box { width: 760px; max-width: 88vw; }
+/* 格式转换对话框：6 个格式选项 + 提示行，加宽避免换行拥挤 */
+#dlg-changetype .modal-box { width: 420px; max-width: 88vw; }
+.help-body { max-height: 60vh; overflow-y: auto; line-height: 1.8; }
+.help-body p { margin: 0 0 6px; }
+.help-body b { color: #333; }
+.help-sec { margin-bottom: 14px; }
+.help-sec:last-child { margin-bottom: 0; }
+.help-sec-title {
+    font-size: 14px;
+    font-weight: bold;
+    color: #d29100;
+    border-left: 3px solid #e8a200;
+    padding-left: 8px;
+    margin: 0 0 6px;
+}
+.help-keys { width: 100%; border-collapse: collapse; margin: 0; line-height: 1.6; }
+.help-keys th, .help-keys td { border: 1px solid #e0e0e0; padding: 2px 10px; text-align: left; vertical-align: middle; }
+.help-keys th { background: #f5f5f5; font-weight: bold; }
+.help-keys td:first-child, .help-keys td:nth-child(3) { white-space: nowrap; }
+.help-body kbd {
+    display: inline-block;
+    min-width: 14px;
+    padding: 0 5px;
+    border: 1px solid #ccc;
+    border-bottom-width: 2px;
+    border-radius: 3px;
+    background: #f7f7f7;
+    font-family: Consolas, "Courier New", monospace;
+    font-size: 12px;
+    line-height: 17px;
+    text-align: center;
+    color: #333;
+}
+
+/* 关于 / 许可证 对话框 */
+.about-body { line-height: 1.8; }
+.about-body #about-name { font-size: 20px; font-weight: bold; margin-bottom: 6px; }
+.about-body #about-version { color: #666; }
+.license-body { max-height: 60vh; overflow-y: auto; }
+.license-body pre { margin: 0; font-size: 12px; line-height: 1.7; white-space: pre-wrap; word-break: break-word; }
+
+/* 应用日志对话框：等宽字体、可滚动、到边不自动换行以对齐时间列 */
+.applog-body { max-height: 60vh; overflow-y: auto; background: #f7f7f7; border: 1px solid #e0e0e0; }
+.applog-body pre { margin: 0; padding: 8px; font-family: Consolas, "Courier New", monospace; font-size: 12px; line-height: 1.6; white-space: pre; }
+
+/* 筛选模式放大展示 */
+.choose-div.choose-large { cursor: zoom-out; }
+
+/* 全局滚动条：窄条样式（帮助/许可证/日志等可滚动区域） */
+::-webkit-scrollbar { width: 8px; height: 8px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: #c8c8c8; border-radius: 4px; }
+::-webkit-scrollbar-thumb:hover { background: #a8a8a8; }
+::-webkit-scrollbar-corner { background: transparent; }

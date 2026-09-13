@@ -1,0 +1,270 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; img-src 'self' file: data: blob:; style-src 'self' 'unsafe-inline'; script-src 'self'; media-src 'self' file: blob:;">
+  <title>PicSee 图片浏览器</title>
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+
+  <!-- 主浏览区域 -->
+  <div id="viewport">
+    <!-- 相框/原图模式：单张图片 -->
+    <div id="stage-single">
+      <img id="img-single" alt="">
+      <canvas id="gif-canvas"></canvas>
+      <canvas id="annot-canvas"></canvas>
+    </div>
+    <!-- 漫画模式：纵向多图 -->
+    <div id="stage-cartoon"></div>
+    <!-- 筛选模式：并排对比 -->
+    <div id="stage-choose"></div>
+    <!-- 筛选模式放大后的「还原大小」按钮 -->
+    <div id="choose-restore" class="hidden">还原大小</div>
+
+    <!-- 焦点边框 -->
+    <div id="focus-borders" class="hidden"></div>
+    <!-- 提示信息 -->
+    <div id="toast" class="hidden"></div>
+  </div>
+
+  <!-- 区域选择(截屏)遮罩：窗口级覆盖并置顶，避免被工具栏/菜单/浏览区交互干扰 -->
+  <div id="sel-mask" class="hidden">
+    <canvas id="sel-canvas"></canvas>
+    <div id="sel-rect" class="hidden"></div>
+    <div id="sel-hint">拖动鼠标选择区域；右键 / Enter 剪切保存；Esc 取消</div>
+  </div>
+
+  <!-- 底部操作工具栏 -->
+  <div id="toolbar">
+    <div class="tb-btn" data-act="pre" title="后退"><img src="res/icos/left.png"><span>后退</span></div>
+    <div class="tb-btn" data-act="narrow" title="缩小"><img src="res/icos/narrow.png"><span>缩小</span></div>
+    <div class="tb-btn" data-act="turnleft" title="左旋"><img src="res/icos/turn_left.png"><span>左旋</span></div>
+    <div class="tb-btn" data-act="init" title="还原角度及缩放"><img src="res/icos/refresh.png"><span>还原</span></div>
+    <div class="tb-btn" data-act="larger" title="放大"><img src="res/icos/enlarge.png"><span>放大</span></div>
+    <div class="tb-btn" data-act="turnright" title="右旋"><img src="res/icos/turn_right.png"><span>右旋</span></div>
+    <div class="tb-btn" data-act="next" title="前进"><img src="res/icos/right.png"><span>前进</span></div>
+    <div class="tb-btn" data-act="del" title="删除（回收站，不可用时移入 _del）"><img src="res/icos/delete.png"><span>删除</span></div>
+  </div>
+
+  <!-- 状态栏 -->
+  <div id="statusbar">
+    <span id="st-mode" class="st-item">相框模式</span>
+    <span id="st-info" class="st-item stretch"></span>
+    <span id="st-exif" class="st-item stretch"></span>
+    <span id="st-times" class="st-item"></span>
+    <span id="st-size" class="st-item"></span>
+    <span id="st-filesize" class="st-item"></span>
+    <span id="st-order" class="st-item"></span>
+  </div>
+
+  <!-- 右键菜单：一级为分类，二级为具体命令（避免菜单过长显示不全） -->
+  <div id="ctxmenu" class="hidden">
+    <div class="cm-item" data-cmd="open">打开图片…</div>
+    <div class="cm-sep"></div>
+    <div class="cm-item" data-mode="NOT_OVERFLOW">相框模式</div>
+    <div class="cm-item" data-mode="NORMAL">原图模式</div>
+    <div class="cm-item" data-mode="CARTOON">漫画模式</div>
+    <div class="cm-item" data-mode="CHOOSE">筛选模式</div>
+    <div class="cm-sep"></div>
+    <div class="cm-item cm-parent">图片处理<span class="cm-arrow">&gt;</span>
+      <div class="cm-sub">
+        <div class="cm-item" data-cmd="drawline">标记绘图</div>
+        <div class="cm-item" data-cmd="cleandraw">清除标注</div>
+        <div class="cm-item" data-cmd="savescreen">保存画面为图片</div>
+        <div class="cm-item" data-cmd="saverot">旋转后保存</div>
+      </div>
+    </div>
+    <div class="cm-item cm-parent">文件操作<span class="cm-arrow">&gt;</span>
+      <div class="cm-sub">
+        <div class="cm-item" data-cmd="opendir">打开所在文件夹</div>
+        <div class="cm-item" data-cmd="copyfile">复制到目录并放剪贴板</div>
+        <div class="cm-item" data-cmd="movefile">移动到目录</div>
+        <div class="cm-item" data-cmd="mark">标记当前图片</div>
+        <div class="cm-item" data-cmd="savedel">标记定位</div>
+      </div>
+    </div>
+    <div class="cm-item cm-parent">格式与压缩<span class="cm-arrow">&gt;</span>
+      <div class="cm-sub">
+        <div class="cm-item" data-cmd="changetype">格式转换…</div>
+        <div class="cm-item" data-cmd="compression">压缩(单张)</div>
+        <div class="cm-item" data-cmd="compressall">压缩(整个文件夹)</div>
+        <div class="cm-item" data-cmd="compresswx">压缩(微信)</div>
+      </div>
+    </div>
+    <div class="cm-sep"></div>
+    <div class="cm-item cm-parent">截屏<span class="cm-arrow">&gt;</span>
+      <div class="cm-sub">
+        <div class="cm-item" data-cmd="screenshot">开始截屏</div>
+        <div class="cm-item" data-cmd="cancut">取消截屏</div>
+      </div>
+    </div>
+    <div class="cm-item" data-cmd="fullscreen">全屏</div>
+    <div class="cm-item cm-parent">显示<span class="cm-arrow">&gt;</span>
+      <div class="cm-sub">
+        <div class="cm-item" data-cmd="gifswitch">GIF播放/暂停</div>
+      </div>
+    </div>
+    <div class="cm-sep"></div>
+    <div class="cm-item cm-parent">关于<span class="cm-arrow">&gt;</span>
+      <div class="cm-sub">
+        <div class="cm-item" data-cmd="license">许可证</div>
+        <div class="cm-item" data-cmd="help">帮助</div>
+        <div class="cm-item" data-cmd="about">关于</div>
+        <div class="cm-sep"></div>
+        <div class="cm-item" data-cmd="applog">应用日志</div>
+        <div class="cm-item" data-cmd="devtool">开发者工具</div>
+      </div>
+    </div>
+  </div>
+
+  <!-- 浏览模式切换菜单（点击状态栏模式信息弹出，与右键菜单共用 data-mode 逻辑） -->
+  <div id="modemenu" class="hidden">
+    <div class="cm-item" data-mode="NOT_OVERFLOW">相框模式</div>
+    <div class="cm-item" data-mode="NORMAL">原图模式</div>
+    <div class="cm-item" data-mode="CARTOON">漫画模式</div>
+    <div class="cm-item" data-mode="CHOOSE">筛选模式</div>
+  </div>
+
+  <!-- 压缩对话框 -->
+  <div id="dlg-compression" class="modal hidden">
+    <div class="modal-box">
+      <div class="modal-title">图片压缩</div>
+      <div class="modal-body">
+        <label>压缩率(0-100)：</label>
+        <input type="number" id="comp-quality" value="95" min="0" max="100">
+      </div>
+      <div class="modal-btns">
+        <button class="btn primary" id="comp-ok">确定</button>
+        <button class="btn" id="comp-cancel">取消</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- 格式转换对话框 -->
+  <div id="dlg-changetype" class="modal hidden">
+    <div class="modal-box">
+      <div class="modal-title">转换为</div>
+      <div class="modal-body">
+        <label><input type="radio" name="ct" value="jpg" checked> JPG</label>
+        <label><input type="radio" name="ct" value="bmp"> BMP</label>
+        <label><input type="radio" name="ct" value="png"> PNG</label>
+        <label><input type="radio" name="ct" value="gif"> GIF</label>
+        <label><input type="radio" name="ct" value="tiff"> TIFF</label>
+        <label><input type="radio" name="ct" value="webp"> WebP</label>
+        <div class="ct-tip" id="ct-tip">有损压缩（质量 95）：体积小、画质好，照片和日常分享首选。</div>
+      </div>
+      <div class="modal-btns">
+        <button class="btn primary" id="ct-ok">确定</button>
+        <button class="btn" id="ct-cancel">取消</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- 移动/复制弹窗 -->
+  <div id="dlg-copybj" class="modal hidden">
+    <div class="modal-box">
+      <div class="modal-title" id="cbj-title"></div>
+      <div class="modal-body" id="cbj-info"></div>
+      <div class="modal-btns">
+        <button class="btn primary" id="cbj-ok">确定</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- 帮助对话框 -->
+  <div id="dlg-help" class="modal hidden">
+    <div class="modal-box wide">
+      <div class="modal-title">帮助</div>
+      <div class="modal-body help-body">
+        <div class="help-sec">
+          <div class="help-sec-title">浏览与查看</div>
+          <p><b>浏览模式</b>：右键菜单一级项中切换：相框（等比完整显示）、原图（可拖动/缩放）、漫画（多图纵向连排）、筛选（并排对比两张）；状态栏左侧显示当前模式。筛选模式单击可将两张图同时放大2倍（此后每单击一次再翻一倍）并把点击处置于画面正中，按住拖动平移，双击放大单张、再次双击还原，每张图右上角的「删除」按钮（或 Ctrl+点击该图）可将其移除，「还原大小」按钮回到原大小</p>
+          <p><b>翻页</b>：<kbd>←</kbd> / <kbd>→</kbd> 上一张、下一张；漫画模式下 <kbd>↑</kbd> / <kbd>↓</kbd> 或滚轮翻一整屏</p>
+          <p><b>缩放</b>：滚轮或工具栏放大/缩小；<kbd>Ctrl</kbd>+滚轮亦可用；「还原」恢复角度与缩放</p>
+          <p><b>旋转</b>：工具栏左旋/右旋，或 <kbd>Ctrl+←</kbd> / <kbd>Ctrl+→</kbd>；「旋转后保存」（<kbd>Ctrl+S</kbd>）输出到 rotaled 文件夹。JPEG 会真实旋转像素并用原图的量化表/霍夫曼表重编码，画质与体积都与原图同级；手机照片的 EXIF 自动朝向也会一并写入像素，成品不依赖 EXIF 即可正确显示</p>
+          <p><b>RAW 支持</b>：可预览 CR2/CRW/NEF/ARW/RW2/DNG/ORF/RAF 等 RAW 格式，后台线程自动解码生成缓存（首次查看需等待数秒），并按 EXIF 自动摆正朝向</p>
+        </div>
+        <div class="help-sec">
+          <div class="help-sec-title">快捷键</div>
+          <table class="help-keys">
+            <thead><tr><th>快捷键</th><th>功能</th><th>快捷键</th><th>功能</th></tr></thead>
+            <tbody>
+              <tr><td><kbd>Ctrl+O</kbd></td><td>打开图片</td><td><kbd>Ctrl+C</kbd></td><td>复制到 _copied 并放入剪贴板</td></tr>
+              <tr><td><kbd>Ctrl+X</kbd></td><td>移动到 _moved</td><td><kbd>Ctrl+P</kbd></td><td>标记当前图片</td></tr>
+              <tr><td><kbd>Ctrl+A</kbd></td><td>格式转换</td><td><kbd>Ctrl+S</kbd></td><td>旋转后保存</td></tr>
+              <tr><td><kbd>Ctrl+F</kbd></td><td>全屏</td><td><kbd>Ctrl+D</kbd> / <kbd>Delete</kbd></td><td>删除（回收站，不可用时移入 _del）</td></tr>
+              <tr><td><kbd>Ctrl+Shift+D</kbd></td><td>截屏</td><td><kbd>Ctrl+←</kbd> / <kbd>Ctrl+→</kbd></td><td>左旋 / 右旋</td></tr>
+              <tr><td><kbd>空格</kbd></td><td>GIF 播放/暂停</td><td><kbd>Alt+B</kbd></td><td>相框模式</td></tr>
+              <tr><td><kbd>Alt+N</kbd></td><td>原图模式</td><td><kbd>Alt+M</kbd></td><td>漫画模式</td></tr>
+              <tr><td><kbd>Alt+X</kbd></td><td>筛选模式</td><td></td><td></td></tr>
+            </tbody>
+          </table>
+        </div>
+        <div class="help-sec">
+          <div class="help-sec-title">标注与截屏</div>
+          <p><b>标记绘图</b>：右键菜单开启后按住左键绘制，「清除标注」清空；「保存画面为图片」导出当前画面</p>
+          <p><b>截屏</b>：右键菜单「截屏」后拖动选择区域，<kbd>Enter</kbd> 截取并放入剪贴板，<kbd>Esc</kbd> 取消</p>
+        </div>
+        <div class="help-sec">
+          <div class="help-sec-title">文件与格式</div>
+          <p><b>支持格式</b>：常规 bmp、png、jpg、jpeg、jfif、gif、webp、avif、svg、ico、tiff、tif；RAW crw、cr2、nef、raf、arw、rw2、dng、orf</p>
+          <p><b>文件操作</b>：<kbd>Delete</kbd> 删除（优先放入回收站，回收站不可用时移动到同目录的 _del 目录）；复制到 _copied 并放入剪贴板；移动到 _moved</p>
+          <p><b>格式与压缩</b>：格式转换（JPG/BMP/PNG/GIF/TIFF/WebP）输出到 typechanged，RAW 转换使用全尺寸解码数据；压缩输出到 compressed（微信压缩为 compressedwx，仅处理 jpg）</p>
+        </div>
+        <div class="help-sec">
+          <div class="help-sec-title">其他</div>
+          <p>右键菜单可打开所在文件夹、全屏、GIF 播放/暂停；支持拖放图片到窗口打开</p>
+        </div>
+      </div>
+      <div class="modal-btns">
+        <button class="btn primary" id="help-ok">关闭</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- 关于对话框 -->
+  <div id="dlg-about" class="modal hidden">
+    <div class="modal-box">
+      <div class="modal-title">关于</div>
+      <div class="modal-body about-body">
+        <p id="about-name">PicSee</p>
+        <p id="about-version"></p>
+        <p>基于 Electron 的轻量看图软件。</p>
+        <p>作者：xunxun10 &nbsp;|&nbsp; 协议：MIT</p>
+      </div>
+      <div class="modal-btns">
+        <button class="btn primary" id="about-ok">关闭</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- 许可证对话框 -->
+  <div id="dlg-license" class="modal hidden">
+    <div class="modal-box wide">
+      <div class="modal-title">许可证 (MIT)</div>
+      <div class="modal-body license-body"><pre id="license-text"></pre></div>
+      <div class="modal-btns">
+        <button class="btn primary" id="license-ok">关闭</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- 应用日志对话框：查看后台解码线程等日志，不进状态栏 -->
+  <div id="dlg-applog" class="modal hidden">
+    <div class="modal-box wide">
+      <div class="modal-title">应用日志</div>
+      <div class="modal-body applog-body"><pre id="applog-text"></pre></div>
+      <div class="modal-btns">
+        <button class="btn" id="applog-refresh">刷新</button>
+        <button class="btn" id="applog-clear">清空</button>
+        <button class="btn primary" id="applog-ok">关闭</button>
+      </div>
+    </div>
+  </div>
+
+  <script src="util/jpeg-encode.js"></script>
+  <script src="renderer.js"></script>
+</body>
+</html>

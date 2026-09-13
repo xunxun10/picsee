@@ -1,0 +1,43 @@
+{
+  "name": "picsee",
+  "version": "1.0.1",
+  "description": "轻量看图软件",
+  "main": "main.js",
+  "scripts": {
+    "start": "electron .",
+    "dist": "electron-builder --win --x64 --dir",
+    "linux.x86": "electron-builder --linux --x64 --dir",
+    "arm": "electron-builder --linux --arm64 --dir"
+  },
+  "author": "xunxun10",
+  "license": "MIT",
+  "build": {
+    "appId": "com.xunxun10.picsee",
+    "productName": "picsee",
+    "files": [
+      "!AGENTS.md"
+    ],
+    "directories": {
+      "output": "dist"
+    },
+    "win": {
+      "icon": "res/icon.ico",
+      "target": [
+        "dir"
+      ]
+    },
+    "linux": {
+      "icon": "res/icon.png",
+      "target": [
+        "dir"
+      ]
+    }
+  },
+  "devDependencies": {
+    "electron": "^22.0.0",
+    "electron-builder": "^24.4.0"
+  },
+  "dependencies": {
+    "lightdrift-libraw": "^1.0.0"
+  }
+}
