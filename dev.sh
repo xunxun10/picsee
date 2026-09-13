@@ -4,6 +4,8 @@
 
 S_DIR=$(dirname $(readlink -m $0))
 PKG="$S_DIR/package.json"
+# 打包：所有平台统一按最大 199MB 分片
+SPLIT_SIZE="199m"
 
 function Info(){
     echo -e "\033[32m`date '+%Y-%m-%d %H:%M:%S'` Info: $1\033[0m";
@@ -56,6 +58,7 @@ function _detect_platform() {
             OUTPUT_NAME="picsee-win32-x64"
             ARCH_TAG="win32-x64"
             LABEL_FILE="dist.files.md5.win.txt"
+            ZA="$S_DIR/node_modules/7zip-bin/win/x64/7za.exe"
         else
             Error "不支持的 Windows 架构: $arch"
             exit 1
@@ -68,6 +71,7 @@ function _detect_platform() {
             OUTPUT_NAME="picsee-linux-x86"
             ARCH_TAG="linux-x86"
             LABEL_FILE="dist.files.md5.linux-x86.txt"
+            ZA="$S_DIR/node_modules/7zip-bin/linux/x64/7za"
         elif [[ "$arch" == "aarch64" || "$arch" == "arm64" || "$arch" == "armv8"* ]]; then
             PLATFORM="arm"
             BUILD_CMD="npm run arm"
@@ -75,6 +79,7 @@ function _detect_platform() {
             OUTPUT_NAME="picsee-linux-arm64"
             ARCH_TAG="linux-arm64"
             LABEL_FILE="dist.files.md5.txt"
+            ZA="$S_DIR/node_modules/7zip-bin/linux/arm64/7za"
         else
             Error "不支持的 Linux 架构: $arch"
             exit 1
@@ -139,24 +144,52 @@ function build(){
 }
 
 # ===== 打包（构建 + 压缩） =====
+
+# 用 7za 按分片大小压缩并做单分卷兜底重命名。
+# $1=zip 名（不含扩展），$2=待压缩目录，$3=分片大小（如 199m）。成功返回 0，失败返回 1。
+function _zip_pack(){
+    local zname=$1
+    local srcdir=$2
+    local split_size=$3
+
+    "$ZA" a -tzip -bso0 -bsp0 "$zname.zip" "$srcdir" -v${split_size}
+    if [ $? -ne 0 ]; then
+        Error "压缩 $zname.zip 失败"
+        return 1
+    fi
+
+    # 兜底：仅一个分卷时重命名为普通 .zip
+    if [ -f "$zname.zip.001" ] && [ ! -f "$zname.zip.002" ]; then
+        mv "$zname.zip.001" "$zname.zip"
+        Info "仅一个分卷，已重命名为 $zname.zip"
+    fi
+    return 0
+}
+
 function pack(){
     local t_start=$(date +%s)
     _detect_platform
     local version=$(grep '"version"' "$PKG" | awk -F '"' '{print $4}')
 
-    # 清理旧包（兼容全部分片）
-    rm -f "$S_DIR/dist/$OUTPUT_NAME"*.zip "$S_DIR/dist/$OUTPUT_NAME"*.z[0-9][0-9]
+    # 清理旧包（兼容 zip 与 7za 两种分卷命名）
+    rm -f "$S_DIR/dist/$OUTPUT_NAME"*.zip "$S_DIR/dist/$OUTPUT_NAME"*.zip.[0-9][0-9][0-9] "$S_DIR/dist/$OUTPUT_NAME"*.z[0-9][0-9]
 
     # 构建
     Info "开始执行 $BUILD_CMD ..."
     cd "$S_DIR" && $BUILD_CMD
     CheckOption "$BUILD_CMD 执行失败"
 
-    # 打包：所有平台统一按最大 99MB 分片
-    local split_size="99m"
+    # 打包：按 $SPLIT_SIZE 分片
+    local split_size="$SPLIT_SIZE"
     local src_dir="$S_DIR/dist/$BUILD_DIR"
     if [ ! -d "$src_dir" ]; then
         Error "构建产物目录 $src_dir 不存在"
+        exit 1
+    fi
+
+    # 7za 由 electron-builder 依赖（7zip-bin）提供，所有平台统一使用，避免依赖系统 zip 命令
+    if [ ! -f "$ZA" ]; then
+        Error "未找到 7za（$ZA），请先执行 npm install"
         exit 1
     fi
 
@@ -166,7 +199,7 @@ function pack(){
         # ARM64: 分片 zip 压缩
         Info "开始将 $BUILD_DIR 打包为 $OUTPUT_NAME-$version.zip（按 ${split_size} 分片）..."
         mv "$BUILD_DIR" "$OUTPUT_NAME" &&
-            zip -rq -s ${split_size} "$OUTPUT_NAME-$version.zip" "$OUTPUT_NAME" &&
+            _zip_pack "$OUTPUT_NAME-$version" "$OUTPUT_NAME" "$split_size" &&
             mv "$OUTPUT_NAME" "$BUILD_DIR" &&
             Info "已打包为 $OUTPUT_NAME-$version.zip 及分片文件"
         CheckOption "打包 $OUTPUT_NAME 失败"
@@ -178,7 +211,7 @@ function pack(){
         # Windows/Linux x86: 分片 zip 压缩
         Info "开始将 $BUILD_DIR 打包为 $OUTPUT_NAME-$version.zip（按 ${split_size} 分片）..."
         cp -rfa "$BUILD_DIR" "$OUTPUT_NAME" &&
-            zip -rq -s ${split_size} "$OUTPUT_NAME-$version.zip" "$OUTPUT_NAME" &&
+            _zip_pack "$OUTPUT_NAME-$version" "$OUTPUT_NAME" "$split_size" &&
             rm -rf "$OUTPUT_NAME" &&
             Info "已打包为 $OUTPUT_NAME-$version.zip 及分片文件"
         CheckOption "打包 $OUTPUT_NAME 失败"
@@ -259,7 +292,7 @@ function clean(){
     _detect_platform
     Info "开始清理 $S_DIR/dist 目录"
     rm -rf "$S_DIR/dist/$BUILD_DIR" "$S_DIR/dist/incr"
-    rm -rf "$S_DIR/dist/$OUTPUT_NAME"*.zip
+    rm -rf "$S_DIR/dist/$OUTPUT_NAME"*.zip "$S_DIR/dist/$OUTPUT_NAME"*.zip.[0-9][0-9][0-9]
     Info "清理完成"
 }
 

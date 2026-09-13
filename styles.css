@@ -359,6 +359,23 @@ body.fullscreen #viewport { bottom: 0; }
     border-top: 1px solid #eee;
 }
 .modal-btns { text-align: right; }
+
+/* 转换中提示 */
+#dlg-busy .busy-box {
+    text-align: center;
+    min-width: 200px;
+}
+.busy-spinner {
+    width: 28px;
+    height: 28px;
+    margin: 0 auto 12px;
+    border: 3px solid #e0e0e0;
+    border-top-color: #e8a200;
+    border-radius: 50%;
+    animation: busy-spin 0.8s linear infinite;
+}
+@keyframes busy-spin { to { transform: rotate(360deg); } }
+.busy-text { font-size: 13px; color: #555; }
 .btn {
     display: inline-block;
     padding: 5px 16px;

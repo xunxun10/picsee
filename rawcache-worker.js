@@ -10,6 +10,8 @@ const { parentPort, threadId } = require('worker_threads')
 const fs = require('fs')
 const path = require('path')
 
+const Exif = require('./util/exif')
+
 // RAW 缓存 JPG 的编码质量（显示缓存与全尺寸转换缓存共用）；
 // 与渲染端格式转换输出质量 JPG_REENCODE_Q（renderer.js）取值一致
 const RAW_CACHE_JPEG_Q = 95
@@ -61,7 +63,16 @@ async function decodeViaLibraw(fp, cache, full) {
             return false
         }
         fs.mkdirSync(path.dirname(cache), { recursive: true })
-        fs.writeFileSync(cache, r.data)
+        // 全尺寸缓存：嵌入从源 RAW 读出的 EXIF，让缓存文件被外部看图器打开时也保留拍摄参数。
+        // 执行幂等（每次生成都会重写）；失败不影响像素写入，仅丢弃 EXIF。
+        let out = r.data
+        if (full) {
+            try {
+                const app1 = await Exif.buildRawExifApp1(fp)
+                if (app1 && app1.length) out = Exif.embedExifApp1(out, app1)
+            } catch (e) { workerLog(`EXIF 嵌入失败，忽略（${e && e.message}）`) }
+        }
+        fs.writeFileSync(cache, out)
         workerLog(`缓存已写入: ${cache}（总耗时 ${Date.now() - t0}ms）`)
         return true
     } catch (e) {

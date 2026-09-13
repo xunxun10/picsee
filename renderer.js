@@ -1512,7 +1512,22 @@
         try { imgData = ctx.getImageData(0, 0, c2.width, c2.height) } catch (e) { return null }
         switch (ext) {
             case 'jpg':
-            case 'jpeg': return await blobify(c2.toDataURL('image/jpeg', JPG_REENCODE_Q))
+            case 'jpeg': {
+                // 优先走 jpeg-encode 管线：沿用原图量化表/霍夫曼表重编码（画质体积与原图同级），
+                // 并把原图的 EXIF/ICC 等 APPn 段原样搬过去（EXIF 朝向置回 1——canvas 解码时浏览器
+                // 已按朝向摆正像素，不能再转第二次），从而保留拍摄参数等元数据。
+                // 源不是 JPEG（RAW/PNG 等）或结构异常时回退普通 canvas 编码。
+                const exif = await encodeJpegWithExif(file, im, imgData)
+                if (exif) return exif
+                // 源不是 JPEG（RAW 等）：canvas 编码会丢 EXIF，把 RAW 的拍摄参数做成 APP1 段补回去
+                const app1 = await API.Invoke({ type: 'exif-app1', path: file })
+                const blob = await blobify(c2.toDataURL('image/jpeg', JPG_REENCODE_Q))
+                if (app1 && app1.length) {
+                    const merged = await injectApp1(blob, app1)
+                    if (merged) return merged
+                }
+                return blob
+            }
             case 'png': return await blobify(c2.toDataURL('image/png'))
             case 'webp': return await blobify(c2.toDataURL('image/webp', JPG_REENCODE_Q))
             case 'bmp': return encodeBMP(imgData)
@@ -1529,20 +1544,75 @@
         return new Blob([arr])
     }
 
+    // 用 jpeg-encode 管线把当前像素重编码为 JPG，并保留源 JPEG 的 EXIF/ICC 等元数据。
+    // 返回 Blob；源不是 JPEG 或编码失败时返回 null（调用方回退 canvas 编码）。
+    async function encodeJpegWithExif(file, im, imgData) {
+        try {
+            if (typeof JpegEncode === 'undefined' || !imgData) return null
+            const head = await API.Invoke({ type: 'jpeg-source', path: file })
+            if (!head || !head.ok || !head.src) return null
+            const w = im.naturalWidth, h = im.naturalHeight
+            if (!w || !h) return null
+            const bytes = JpegEncode.encodeRotated(imgData.data, w, h, 0, head.src)
+            if (!bytes || !bytes.length) return null
+            return new Blob([bytes], { type: 'image/jpeg' })
+        } catch (e) {
+            return null
+        }
+    }
+
+    // 把 EXIF APP1 段（含 FFE1 头）插入 JPEG 的 SOI(FFD8) 之后
+    async function injectApp1(blob, app1) {
+        try {
+            const buf = new Uint8Array(await blob.arrayBuffer())
+            if (buf.length < 2 || buf[0] !== 0xFF || buf[1] !== 0xD8) return null
+            const seg = new Uint8Array(app1)
+            const out = new Uint8Array(buf.length + seg.length)
+            out.set(buf.subarray(0, 2), 0)
+            out.set(seg, 2)
+            out.set(buf.subarray(2), 2 + seg.length)
+            return new Blob([out], { type: 'image/jpeg' })
+        } catch (e) {
+            return null
+        }
+    }
+
     // 格式转换：写文件到 typechanged 文件夹
+    // 转换期间弹「转换中」遮罩冻结界面，防止重复转换；结束（成功/失败）后自动关闭。
+    let converting = false
+    const busyEl = () => document.getElementById('dlg-busy')
+    function showBusy(text) {
+        const b = busyEl()
+        if (!b) return
+        const t = document.getElementById('busy-text')
+        if (t) t.textContent = text || '正在转换图片…'
+        b.classList.remove('hidden')
+    }
+    function hideBusy() {
+        const b = busyEl()
+        if (b) b.classList.add('hidden')
+    }
     async function changeType(ext) {
         const file = currentFile()
         if (!file) { info('请选择文件'); return }
-        const blob = await encodeCurrentAs(ext)
-        if (!blob) { info('转换失败：图片无法解码'); return }
-        const folder = file.substring(0, file.lastIndexOf('\\'))
-        const base = fileBase(file).replace(/\.[^.]*$/, '.')
-        const outDir = folder + '\\typechanged'
-        const outPath = outDir + '\\' + base + ext
-        // 通过 dataURL 传给主进程保存
-        const dataUrl = await blobToDataURL(blob)
-        API.CallSys({ type: 'save-format', path: outPath, dataUrl })
-        info('图片转换为 ' + ext.toUpperCase() + ' 格式')
+        if (converting) return
+        converting = true
+        showBusy('正在转换图片…')
+        try {
+            const blob = await encodeCurrentAs(ext)
+            if (!blob) { info('转换失败：图片无法解码'); return }
+            const folder = file.substring(0, file.lastIndexOf('\\'))
+            const base = fileBase(file).replace(/\.[^.]*$/, '.')
+            const outDir = folder + '\\typechanged'
+            const outPath = outDir + '\\' + base + ext
+            // 通过 dataURL 传给主进程保存
+            const dataUrl = await blobToDataURL(blob)
+            API.CallSys({ type: 'save-format', path: outPath, dataUrl })
+            info('图片转换为 ' + ext.toUpperCase() + ' 格式')
+        } finally {
+            hideBusy()
+            converting = false
+        }
     }
     function blobToDataURL(blob) {
         return new Promise((res) => {
@@ -2455,6 +2525,7 @@
     })
     function runCmd(cmd) {
         switch (cmd) {
+            case 'del': delCurFile(); break
             case 'open': openImageDialog(); break
             case 'opendir': openCurDir(); break
             case 'copyfile': copyCurFile(); break

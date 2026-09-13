@@ -387,4 +387,147 @@ function pathExt(fp) {
     return i === -1 ? '' : String(fp).slice(i + 1).toLowerCase()
 }
 
-module.exports = { ReadExifInfo, buildExifText, orientationAngle, RawExifOrientation: rawExifOrientation }
+// ============ EXIF 写入（供 RAW → JPG 格式转换保留拍摄参数） ============
+// RAW 不是 JPEG，转换时走 canvas 普通编码，会丢掉 EXIF。这里用 lightdrift-libraw 读出
+// 程序展示的常见拍摄参数，重新生成一个标准的 EXIF APP1 段（FFE1），由渲染端嵌回 JPG。
+// 只保留常用字段；朝向固定为 1 —— RAW 全尺寸缓存像素已按朝向摆正，不能写回原朝向。
+
+function asciiNull(s) {
+    if (s == null || s === '') return null
+    const str = String(s)
+    const out = Buffer.alloc(str.length + 1)
+    Buffer.from(str, 'ascii').copy(out)   // 末尾补一个 0 结束符
+    return out
+}
+
+// 数值 → EXIF RATIONAL [分子, 分母]，整数直接 1，小数用递增分母逼近到足够精度
+function toRational(v) {
+    const n = Number(v)
+    if (!isFinite(n) || n <= 0) return null
+    if (Math.floor(n) === n) return [n, 1]
+    let best = null, bestErr = Infinity
+    for (let d = 1; d <= 100000; d++) {
+        const num = Math.round(n * d)
+        const err = Math.abs(num / d - n)
+        if (err < bestErr) { bestErr = err; best = [num, d] }
+        if (err < n * 0.00001) break
+    }
+    return best
+}
+
+// 生成 TIFF（II 小端）形式的 EXIF：IFD0 + ExifIFD 两段，数据区跟随。返回 Buffer。
+function buildExifTiff(f) {
+    const mk = asciiNull(f.Make), md = asciiNull(f.Model)
+    const dt = asciiNull(f.DateTime), dto = asciiNull(f.DateTimeOriginal)
+    const sw = asciiNull('PicSee')
+    const expo = toRational(f.ExposureTime), fno = toRational(f.FNumber), fl = toRational(f.FocalLength)
+    let iso = Array.isArray(f.ISOSpeedRatings) ? Number(f.ISOSpeedRatings[0]) : Number(f.ISOSpeedRatings)
+    if (!isFinite(iso)) iso = 0
+
+    const ifd0 = []
+    ifd0.push([0x0112, 3, 1, 'ori'])                                   // Orientation
+    if (mk) ifd0.push([0x010F, 2, mk.length, 'mk'])
+    if (md) ifd0.push([0x0110, 2, md.length, 'md'])
+    if (dt) ifd0.push([0x0132, 2, dt.length, 'dt'])
+    ifd0.push([0x0131, 2, sw.length, 'sw'])                            // Software
+    ifd0.push([0x8769, 4, 1, 'exifIfd'])                               // ExifIFD 指针
+    const exifIfd = []
+    if (dto) exifIfd.push([0x9003, 2, dto.length, 'dto'])
+    if (expo) exifIfd.push([0x829A, 5, 1, 'expo'])
+    if (fno) exifIfd.push([0x829D, 5, 1, 'fno'])
+    if (iso > 0) exifIfd.push([0x8827, 3, 1, 'iso'])
+    if (fl) exifIfd.push([0x920A, 5, 1, 'fl'])
+    const n0 = ifd0.length, n1 = exifIfd.length
+
+    const ifd0Off = 8
+    const exifIfdOff = ifd0Off + 2 + n0 * 12 + 4
+    let d = exifIfdOff + 2 + n1 * 12 + 4                            // 数据区起点
+    const ratOff = {}
+    for (const k of ['expo', 'fno', 'fl']) {
+        const v = k === 'expo' ? expo : k === 'fno' ? fno : fl
+        if (!v) continue
+        if (d % 4) d += 4 - d % 4
+        ratOff[k] = d
+        d += 8
+    }
+    const strOff = {}
+    for (const [name, buf] of [['mk', mk], ['md', md], ['dt', dt], ['sw', sw], ['dto', dto]]) {
+        if (buf) { strOff[name] = d; d += buf.length }
+    }
+
+    const raw = Buffer.alloc(d)
+    const w16 = (o, v) => raw.writeUInt16LE(v, o)
+    const w32 = (o, v) => raw.writeUInt32LE(v, o)
+
+    // TIFF 头
+    w16(0, 0x4949); w16(2, 42); w32(4, ifd0Off)
+    // IFD0
+    w16(ifd0Off, n0)
+    ifd0.forEach(([id, type, count, ref], i) => {
+        const base = ifd0Off + 2 + i * 12
+        w16(base, id); w16(base + 2, type); w32(base + 4, count)
+        let val
+        if (ref === 'exifIfd') val = exifIfdOff
+        else if (ref === 'ori') val = 1
+        else if (type === 2) val = strOff[ref]
+        else val = 0
+        w32(base + 8, val)
+    })
+    w32(ifd0Off + 2 + n0 * 12, 0)                                  // next IFD
+    // ExifIFD
+    w16(exifIfdOff, n1)
+    exifIfd.forEach(([id, type, count, ref], i) => {
+        const base = exifIfdOff + 2 + i * 12
+        w16(base, id); w16(base + 2, type); w32(base + 4, count)
+        let val
+        if (type === 2) val = strOff[ref]
+        else if (type === 5) val = ratOff[ref]
+        else val = iso
+        w32(base + 8, val)
+    })
+    w32(exifIfdOff + 2 + n1 * 12, 0)                               // next IFD
+    // 数据区：rationals
+    for (const k of ['expo', 'fno', 'fl']) {
+        const v = k === 'expo' ? expo : k === 'fno' ? fno : fl
+        if (!v || ratOff[k] === undefined) continue
+        w32(ratOff[k], v[0] >>> 0); w32(ratOff[k] + 4, v[1] >>> 0)
+    }
+    // 数据区：strings
+    for (const [name, buf] of [['mk', mk], ['md', md], ['dt', dt], ['sw', sw], ['dto', dto]]) {
+        if (buf) buf.copy(raw, strOff[name])
+    }
+    return raw
+}
+
+// 从 RAW 文件生成 EXIF APP1 段（含 FFE1 头），供格式转换嵌入输出 JPG。失败返回 null。
+async function buildRawExifApp1(fp) {
+    try {
+        const obj = {}
+        if (RAW_EXT.includes(pathExt(fp))) Object.assign(obj, await readRawExif(fp))
+        const tiff = buildExifTiff(obj)
+        if (!tiff) return null
+        const seg = Buffer.alloc(2 + 2 + 6 + tiff.length)          // FFE1 + LEN + "Exif\0\0" + TIFF
+        seg[0] = 0xFF; seg[1] = 0xE1
+        seg.writeUInt16BE(6 + tiff.length, 2)
+        seg.write('Exif\0\0', 4, 'latin1')
+        tiff.copy(seg, 10)
+        return seg
+    } catch (e) {
+        return null
+    }
+}
+
+// 把 EXIF APP1 段（含 FFE1 头）插入 JPEG 的 SOI(FFD8) 之后。Node 端使用（供 RAW 缓存写入）。
+// 非 JPEG 或 app1 无效时原样返回。
+function embedExifApp1(bytes, app1) {
+    if (!bytes || bytes.length < 2 || bytes[0] !== 0xFF || bytes[1] !== 0xD8) return bytes
+    if (!app1 || !app1.length) return bytes
+    const src = Buffer.isBuffer(bytes) ? bytes : Buffer.from(bytes)
+    const out = Buffer.alloc(src.length + app1.length)
+    src.copy(out, 0, 0, 2)
+    app1.copy(out, 2)
+    src.copy(out, 2 + app1.length, 2)
+    return out
+}
+
+module.exports = { ReadExifInfo, buildExifText, orientationAngle, RawExifOrientation: rawExifOrientation, buildRawExifApp1, embedExifApp1 }

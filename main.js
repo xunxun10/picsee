@@ -581,6 +581,11 @@ async function HandleInvoke(msg) {
             case 'read-file-bytes': {
                 try { return new Uint8Array(fs.readFileSync(msg.path)) } catch (e) { return null }
             }
+            case 'exif-app1': {
+                // 供格式转换：RAW（非 JPEG）生成一个 EXIF APP1 段（含 FFE1 头）嵌回输出 JPG，
+                // 从而保留拍摄参数。失败（非 RAW/读不出元数据）返回 null，渲染端忽略。
+                try { return await Exif.buildRawExifApp1(msg.path) } catch (e) { return null }
+            }
             case 'display-path':
                 // RAW 返回 raw.cache 下的缓存 JPG，其余原样返回
                 return await EnsureRawCache(msg.path)
