@@ -1,25 +1,47 @@
 {
   "name": "picsee",
-  "version": "1.0.1",
+  "version": "1.0.3",
   "description": "轻量看图软件",
   "main": "main.js",
   "scripts": {
-    "start": "electron .",
-    "dist": "electron-builder --win --x64 --dir",
-    "linux.x86": "electron-builder --linux --x64 --dir",
-    "arm": "electron-builder --linux --arm64 --dir"
+    "build:native": "node native/gen-jpeg-config.js && node native/ensure-configure.js",
+    "start": "npm run build:native && electron .",
+    "dist": "npm run build:native && electron-builder --win --x64 --dir",
+    "linux.x86": "npm run build:native && electron-builder --linux --x64 --dir",
+    "arm": "npm run build:native && electron-builder --linux --arm64 --dir"
   },
   "author": "xunxun10",
   "license": "MIT",
   "build": {
     "appId": "com.xunxun10.picsee",
     "productName": "picsee",
+    "npmRebuild": false,
     "files": [
-      "!AGENTS.md"
+      "!AGENTS.md",
+      "!native/deps/**",
+      "!native/src/**",
+      "!native/binding.gyp",
+      "!native/build/Release/obj/**",
+      "!native/build/Release/*.lib",
+      "!native/build/Release/*.exp",
+      "!native/build/Release/*.pdb"
+    ],
+    "asarUnpack": [
+      "native/build/Release/*.node"
     ],
     "directories": {
       "output": "dist"
     },
+    "extraResources": [
+      {
+        "from": "res/icon.ico",
+        "to": "icon.ico"
+      },
+      {
+        "from": "res/icon.png",
+        "to": "icon.png"
+      }
+    ],
     "win": {
       "icon": "res/icon.ico",
       "target": [
@@ -35,9 +57,11 @@
   },
   "devDependencies": {
     "electron": "^22.0.0",
-    "electron-builder": "^24.4.0"
+    "electron-builder": "^24.4.0",
+    "node-addon-api": "^7.1.0",
+    "node-gyp": "^9.4.0"
   },
   "dependencies": {
-    "lightdrift-libraw": "^1.0.0"
+    "sharp": "0.32.6"
   }
 }

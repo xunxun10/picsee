@@ -8,6 +8,17 @@
     // 重新花大量比特保留，体积成倍膨胀（实测 1312x736 的图：原 101KB，q=1.0 重编码后 436KB）
     const JPG_REENCODE_Q = 0.95
 
+    // 微信压缩（compressionWx）阈值，独立变量便于按需调整。
+    // WX_SHORT_SIDE：短边上限。实测微信下载图是"短边 1080"（如 1080×1620），即微信压缩的是
+    //   较短边到 1080、长边按比例跟随；先按它压，命中微信的尺寸压缩线，不会被二次缩放
+    // WX_LONG_SIDE：长边上限（更小的兜底档）；若短边 1080 后仍超体积，再压到长边 1080
+    // WX_TARGET_BYTES：目标体积上限，尽量压在微信的大小自动压缩线（约 500KB）以下
+    // WX_QUALITY：固定压缩质量
+    const WX_SHORT_SIDE = 1080
+    const WX_LONG_SIDE = 1080
+    const WX_TARGET_BYTES = 500 * 1024
+    const WX_QUALITY = 90
+
     // ============ 全局状态 ============
     const State = {
         files: [],          // 当前文件夹图片路径列表
@@ -89,7 +100,7 @@
 
     // ============ RAW 支持 ============
     // RAW 无法被浏览器解码，主进程会先解码出 raw.cache/<原名>.jpg（如 xx.CR2.jpg）供显示
-    // （优先 libraw 解码，失败才用内嵌预览兜底）；这里按同一规则推导显示路径，避免异步查询。
+    // （优先 LibRaw 插件解码，失败才用内嵌预览兜底）；这里按同一规则推导显示路径，避免异步查询。
     // 该缓存像素已由解码阶段按 EXIF 朝向摆正，故渲染端对 RAW 不再旋转
     // （完整旋转方案见 util/raw-rotate.js 顶部说明）。
     const RAW_EXT = ['crw', 'cr2', 'nef', 'orf', 'raf', 'rw2', 'arw', 'dng']
@@ -1512,7 +1523,22 @@
         try { imgData = ctx.getImageData(0, 0, c2.width, c2.height) } catch (e) { return null }
         switch (ext) {
             case 'jpg':
-            case 'jpeg': return await blobify(c2.toDataURL('image/jpeg', JPG_REENCODE_Q))
+            case 'jpeg': {
+                // 优先走 jpeg-encode 管线：沿用原图量化表/霍夫曼表重编码（画质体积与原图同级），
+                // 并把原图的 EXIF/ICC 等 APPn 段原样搬过去（EXIF 朝向置回 1——canvas 解码时浏览器
+                // 已按朝向摆正像素，不能再转第二次），从而保留拍摄参数等元数据。
+                // 源不是 JPEG（RAW/PNG 等）或结构异常时回退普通 canvas 编码。
+                const exif = await encodeJpegWithExif(file, im, imgData)
+                if (exif) return exif
+                // 源不是 JPEG（RAW 等）：canvas 编码会丢 EXIF，把 RAW 的拍摄参数做成 APP1 段补回去
+                const app1 = await API.Invoke({ type: 'exif-app1', path: file })
+                const blob = await blobify(c2.toDataURL('image/jpeg', JPG_REENCODE_Q))
+                if (app1 && app1.length) {
+                    const merged = await injectApp1(blob, app1)
+                    if (merged) return merged
+                }
+                return blob
+            }
             case 'png': return await blobify(c2.toDataURL('image/png'))
             case 'webp': return await blobify(c2.toDataURL('image/webp', JPG_REENCODE_Q))
             case 'bmp': return encodeBMP(imgData)
@@ -1529,20 +1555,75 @@
         return new Blob([arr])
     }
 
+    // 用 jpeg-encode 管线把当前像素重编码为 JPG，并保留源 JPEG 的 EXIF/ICC 等元数据。
+    // 返回 Blob；源不是 JPEG 或编码失败时返回 null（调用方回退 canvas 编码）。
+    async function encodeJpegWithExif(file, im, imgData) {
+        try {
+            if (typeof JpegEncode === 'undefined' || !imgData) return null
+            const head = await API.Invoke({ type: 'jpeg-source', path: file })
+            if (!head || !head.ok || !head.src) return null
+            const w = im.naturalWidth, h = im.naturalHeight
+            if (!w || !h) return null
+            const bytes = JpegEncode.encodeRotated(imgData.data, w, h, 0, head.src)
+            if (!bytes || !bytes.length) return null
+            return new Blob([bytes], { type: 'image/jpeg' })
+        } catch (e) {
+            return null
+        }
+    }
+
+    // 把 EXIF APP1 段（含 FFE1 头）插入 JPEG 的 SOI(FFD8) 之后
+    async function injectApp1(blob, app1) {
+        try {
+            const buf = new Uint8Array(await blob.arrayBuffer())
+            if (buf.length < 2 || buf[0] !== 0xFF || buf[1] !== 0xD8) return null
+            const seg = new Uint8Array(app1)
+            const out = new Uint8Array(buf.length + seg.length)
+            out.set(buf.subarray(0, 2), 0)
+            out.set(seg, 2)
+            out.set(buf.subarray(2), 2 + seg.length)
+            return new Blob([out], { type: 'image/jpeg' })
+        } catch (e) {
+            return null
+        }
+    }
+
     // 格式转换：写文件到 typechanged 文件夹
+    // 转换期间弹「转换中」遮罩冻结界面，防止重复转换；结束（成功/失败）后自动关闭。
+    let converting = false
+    const busyEl = () => document.getElementById('dlg-busy')
+    function showBusy(text) {
+        const b = busyEl()
+        if (!b) return
+        const t = document.getElementById('busy-text')
+        if (t) t.textContent = text || '正在转换图片…'
+        b.classList.remove('hidden')
+    }
+    function hideBusy() {
+        const b = busyEl()
+        if (b) b.classList.add('hidden')
+    }
     async function changeType(ext) {
         const file = currentFile()
         if (!file) { info('请选择文件'); return }
-        const blob = await encodeCurrentAs(ext)
-        if (!blob) { info('转换失败：图片无法解码'); return }
-        const folder = file.substring(0, file.lastIndexOf('\\'))
-        const base = fileBase(file).replace(/\.[^.]*$/, '.')
-        const outDir = folder + '\\typechanged'
-        const outPath = outDir + '\\' + base + ext
-        // 通过 dataURL 传给主进程保存
-        const dataUrl = await blobToDataURL(blob)
-        API.CallSys({ type: 'save-format', path: outPath, dataUrl })
-        info('图片转换为 ' + ext.toUpperCase() + ' 格式')
+        if (converting) return
+        converting = true
+        showBusy('正在转换图片…')
+        try {
+            const blob = await encodeCurrentAs(ext)
+            if (!blob) { info('转换失败：图片无法解码'); return }
+            const folder = file.substring(0, file.lastIndexOf('\\'))
+            const base = fileBase(file).replace(/\.[^.]*$/, '.')
+            const outDir = folder + '\\typechanged'
+            const outPath = outDir + '\\' + base + ext
+            // 通过 dataURL 传给主进程保存
+            const dataUrl = await blobToDataURL(blob)
+            API.CallSys({ type: 'save-format', path: outPath, dataUrl })
+            info('图片转换为 ' + ext.toUpperCase() + ' 格式')
+        } finally {
+            hideBusy()
+            converting = false
+        }
     }
     function blobToDataURL(blob) {
         return new Promise((res) => {
@@ -1607,36 +1688,79 @@
         info('批量压缩已完成！本次共压缩 ' + done + ' 张图片')
     }
 
-    // 微信压缩：仅 jpg/jpeg，最短边压缩到 1080 以内，输出到 compressedwx（批量整个文件夹）
-    async function compressionWx(quality) {
+    // 微信压缩：仅 jpg/jpeg，固定质量 90。逐轮收紧尺寸：先短边 1080（微信同款），
+    // 仍超体积再压长边 1080，两轮都不达标则提示可能被微信自动压缩。输出到 compressedwx。
+    // isSingle=true 仅压当前图片，false 批量压整个文件夹的 jpg。
+    async function compressionWx(isSingle, quality) {
         if (!hasAnyImage()) { info('请先打开一张图片进行浏览'); return }
-        const targets = State.files.filter(f => ['jpg', 'jpeg'].includes(getExt(f)))
-        if (targets.length === 0) { info('当前文件夹没有可压缩的jpg图片'); return }
-        const minL = 1080
+        const shortSide = WX_SHORT_SIDE
+        const longSide = WX_LONG_SIDE
+        const targetBytes = WX_TARGET_BYTES
+        const q = Math.max(1, Math.min(100, quality || WX_QUALITY)) / 100
+        let targets
+        if (isSingle) {
+            const file = currentFile()
+            if (!['jpg', 'jpeg'].includes(getExt(file))) { info('当前图片不是 jpg/jpeg，无法微信压缩'); return }
+            targets = [file]
+        } else {
+            targets = State.files.filter(f => ['jpg', 'jpeg'].includes(getExt(f)))
+            if (targets.length === 0) { info('当前文件夹没有可压缩的jpg图片'); return }
+        }
         let done = 0
+        let overLimit = 0
         for (let i = 0; i < targets.length; i++) {
             const file = targets[i]
             try {
                 const im = await loadImg(file)
-                let w = im.naturalWidth, h = im.naturalHeight
-                if (Math.min(w, h) > minL) {
-                    const t = minL / Math.min(w, h)
-                    w = Math.floor(w * t)
-                    h = Math.floor(h * t)
-                }
                 const c = document.createElement('canvas')
-                c.width = w
-                c.height = h
-                c.getContext('2d').drawImage(im, 0, 0, w, h)
+                c.width = im.naturalWidth, c.height = im.naturalHeight
+                c.getContext('2d').drawImage(im, 0, 0, c.width, c.height)
+                // 第1轮：压短边到 1080（微信同款），仍超则继续
+                let dataUrl = canvasFit(c, 'short', shortSide).toDataURL('image/jpeg', q)
+                // 第2轮：压长边到 1080（更小兜底），仍超则计入超限
+                if (dataUrlBytes(dataUrl) > targetBytes) {
+                    dataUrl = canvasFit(c, 'long', longSide).toDataURL('image/jpeg', q)
+                }
+                const isOver = dataUrlBytes(dataUrl) > targetBytes
+                if (isOver) overLimit++
                 const folder = file.substring(0, file.lastIndexOf('\\'))
                 const base = fileBase(file).replace(/\.[^.]*$/, '')
-                const q = Math.max(0, Math.min(100, quality || 95)) / 100
-                API.CallSys({ type: 'save-format', path: folder + '\\compressedwx\\' + base + '.jpg', dataUrl: c.toDataURL('image/jpeg', q) })
+                API.CallSys({ type: 'save-format', path: folder + '\\compressedwx\\' + base + '.jpg', dataUrl: dataUrl })
                 done++
+                if (isSingle) {
+                    info(isOver ? '微信压缩完成（仍可能被微信自动压缩）:' + fileBase(file) : '微信压缩完成：' + fileBase(file))
+                    return
+                }
             } catch (e) { /* 跳过无法解码的图片 */ }
             info('正在进行微信压缩,请稍等...' + (i + 1) + '/' + targets.length)
         }
-        info('适应微信朋友圈的批量压缩已完成！本次共压缩 ' + done + ' 张图片')
+        if (overLimit > 0) {
+            info('有 ' + overLimit + ' 张图片压缩至短边/长边 1080 后仍超过 ' + Math.round(targetBytes / 1024) + 'KB，可能仍会被微信自动压缩')
+        } else {
+            info('适应微信朋友圈的批量压缩已完成！本次共压缩 ' + done + ' 张图片')
+        }
+    }
+
+    // 等比缩放到指定边达到 val（edge='short' 短边 / 'long' 长边），返回新 canvas；已达标则原样返回
+    function canvasFit(c, edge, val) {
+        const w = c.width, h = c.height
+        const cur = edge === 'long' ? Math.max(w, h) : Math.min(w, h)
+        if (cur <= val) return c
+        const t = val / cur
+        // 用 round 而非 floor：浮点误差可能让收敛边算出 1079.999…，floor 会截成 1079
+        const nw = Math.round(w * t), nh = Math.round(h * t)
+        const nc = document.createElement('canvas')
+        nc.width = nw, nc.height = nh
+        nc.getContext('2d').drawImage(c, 0, 0, nw, nh)
+        return nc
+    }
+
+    // 估算 dataURL(base64) 对应的字节数
+    function dataUrlBytes(dataUrl) {
+        const i = dataUrl.indexOf('base64,')
+        const b64 = dataUrl.substring(i + 7)
+        const pad = b64.endsWith('==') ? 2 : (b64.endsWith('=') ? 1 : 0)
+        return Math.floor(b64.length * 3 / 4) - pad
     }
 
     // 旋转保存
@@ -1970,7 +2094,10 @@
                 State.normalCenter = anchor || null
                 panX = 0; panY = 0
                 break
-            case 'CHOOSE': State.curTimes = 1.0; focusBorders.classList.add('hidden'); break
+            case 'CHOOSE':
+                State.curTimes = 1.0; focusBorders.classList.add('hidden')
+                API.CallSys({ type: 'maximize-window' }) // 筛选模式自动最大化窗口
+                break
         }
         render()
     }
@@ -2455,6 +2582,7 @@
     })
     function runCmd(cmd) {
         switch (cmd) {
+            case 'del': delCurFile(); break
             case 'open': openImageDialog(); break
             case 'opendir': openCurDir(); break
             case 'copyfile': copyCurFile(); break
@@ -2467,7 +2595,8 @@
             case 'changetype': showChangeTypeDlg(); break
             case 'compression': showCompressionDlg(true); break
             case 'compressall': showCompressionDlg(false); break
-            case 'compresswx': compressionWx(95); break
+            case 'compresswx': compressionWx(true); break
+            case 'compresswxall': compressionWx(false); break
             case 'saverot': saveRotal(); break
             case 'screenshot': doScreenshot(); break
             case 'cancut': exitScreenshot(); break

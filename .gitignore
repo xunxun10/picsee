@@ -47,6 +47,9 @@ bower_components
 # Compiled binary addons (https://nodejs.org/api/addons.html)
 build/Release
 
+# RAW 解码插件的 node-gyp 构建目录（含 Makefile/config.gypi 等生成物）
+native/build/
+
 # Dependency directories
 node_modules/
 jspm_packages/

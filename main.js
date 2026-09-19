@@ -98,7 +98,7 @@ const rawPool = createRawPool({
 })
 
 // 按 RAW 的 EXIF 朝向旋转 nativeImage（Electron 未提供直接旋转接口，故走位图搬运）。
-// 仅内嵌预览兜底路径需要调用；libraw 解码路径的朝向已由 libraw 自行烘进像素，不要在此再转。
+// 仅内嵌预览兜底路径需要调用；LibRaw 解码路径的朝向已由 LibRaw 自行烘进像素，不要在此再转。
 function RotateNativeImage(img, orientation) {
     try {
         const size = img.getSize()
@@ -136,7 +136,7 @@ function WriteEmbeddedFallback(fp, cache, maxSide) {
 
 // 保证 RAW 有可显示的缓存 JPG，返回可显示路径（失败时返回原路径）。
 // 两条缓存生成路径（旋转方案见 util/raw-rotate.js 顶部说明）：
-//   路径 A：LibRaw 后台线程解码（half_size 快，失败自动退全尺寸）——朝向由 libraw 自行摆正；
+//   路径 A：内置 LibRaw 自研插件后台线程解码（half_size 快，失败自动退全尺寸）——朝向由 LibRaw 自行摆正；
 //   路径 B：内嵌预览兜底 —— 按 RAW 的 EXIF 朝向旋转后再写出。
 // 无论走哪条，缓存像素都已是摆正的，故渲染端对 RAW 不再旋转。
 // 本函数保证不向调用方抛异常：任一环节出错都退化为“返回原路径”，
@@ -581,6 +581,11 @@ async function HandleInvoke(msg) {
             case 'read-file-bytes': {
                 try { return new Uint8Array(fs.readFileSync(msg.path)) } catch (e) { return null }
             }
+            case 'exif-app1': {
+                // 供格式转换：RAW（非 JPEG）生成一个 EXIF APP1 段（含 FFE1 头）嵌回输出 JPG，
+                // 从而保留拍摄参数。失败（非 RAW/读不出元数据）返回 null，渲染端忽略。
+                try { return await Exif.buildRawExifApp1(msg.path) } catch (e) { return null }
+            }
             case 'display-path':
                 // RAW 返回 raw.cache 下的缓存 JPG，其余原样返回
                 return await EnsureRawCache(msg.path)
@@ -696,6 +701,12 @@ async function HandleWebMsg(msg) {
             break
         case 'restore-window':
             if (G_MAIN_WINDOW) G_MAIN_WINDOW.restore()
+            break
+        case 'maximize-window':
+            if (G_MAIN_WINDOW) {
+                if (G_MAIN_WINDOW.isMinimized()) G_MAIN_WINDOW.restore() // 先还原再最大化
+                G_MAIN_WINDOW.maximize()
+            }
             break
         case 'set-window-title':
             if (G_MAIN_WINDOW && msg.title) G_MAIN_WINDOW.setTitle(msg.title)

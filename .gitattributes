@@ -1,0 +1,9 @@
+# 统一换行符为 LF：入库与检出均为 LF，Windows/Linux/macOS 行为一致
+# text=auto 让 git 自动识别文本文件；eol=lf 强制文本文件检出时用 LF
+* text=auto eol=lf
+
+# 二进制文件显式标注，不做任何换行转换
+*.png binary
+*.ico binary
+*.jpg binary
+*.node binary
