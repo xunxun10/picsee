@@ -3,6 +3,8 @@
 
 const fs = require('fs')
 
+const { loadRawAddon } = require('./raw-addon')
+
 const TAG_NAMES = {
     // IFD0
     0x010F: 'Make',
@@ -267,7 +269,7 @@ const RAW_EXT = ['crw', 'cr2', 'nef', 'orf', 'raf', 'rw2', 'arw', 'dng']
 // 默认的 image-orientation: from-image），RAW 的摆正在写缓存时已完成，渲染端都不再据此旋转。
 // 另注意：text 里的 A（拍摄角度，见 shotAngle）与 angle（需旋转角度）口径相反，用途不同，勿混用。
 // baked 表示“像素已按朝向摆正”（RAW 缓存，详见 util/raw-rotate.js 顶部方案）。
-// JPG 用手写解析；RAW 用 lightdrift-libraw 读元数据（避免解像素，轻量）
+// JPG 用手写解析；RAW 用自研 LibRaw 插件读元数据（避免解像素，轻量）
 async function ReadExifInfo(fp) {
     try {
         const ext = pathExt(fp)
@@ -301,31 +303,26 @@ async function ReadExifInfo(fp) {
     }
 }
 
-// 用 lightdrift-libraw 读取 RAW 拍摄参数，映射为 buildExifText 需要的公共字段
+// 用自研 LibRaw 插件（native/）读取 RAW 拍摄参数，映射为 buildExifText 需要的公共字段
 async function readRawExif(fp) {
     try {
         // 按需动态加载 native 依赖，避免拖慢程序启动
-        const { LibRaw } = require('lightdrift-libraw')
-        const lib = new LibRaw()
-        try {
-            if (await lib.loadFile(fp) === false) return {}
-            let meta = {}
-            try { meta = await lib.getMetadata() || {} } catch (e) { meta = {} }
-            // 元数据为空时解一次包补齐 EXIF（属兜底，较少触发）
-            if (!meta.make && !meta.model && !meta.aperture && !meta.focalLength && !meta.iso && !meta.shutterSpeed) {
-                try { await lib.unpack(); meta = await lib.getMetadata() || {} } catch (e) { meta = {} }
-            }
-            return {
-                Make: meta.make,
-                Model: meta.model,
-                FNumber: meta.aperture,
-                ExposureTime: meta.shutterSpeed,
-                ISOSpeedRatings: meta.iso,
-                FocalLength: meta.focalLength,
-                DateTime: tsToExifStr(meta.timestamp),
-            }
-        } finally {
-            try { await lib.close() } catch (e) {}
+        const { addon } = loadRawAddon()
+        if (!addon) return {}
+        let meta = {}
+        try { meta = addon.metadata(fp) || {} } catch (e) { meta = {} }
+        // 元数据为空时解一次包补齐 EXIF（属兜底，较少触发）
+        if (!meta.make && !meta.model && !meta.aperture && !meta.focalLength && !meta.isoSpeed && !meta.shutter) {
+            try { meta = addon.metadata(fp, { unpack: true }) || {} } catch (e) { meta = {} }
+        }
+        return {
+            Make: meta.make,
+            Model: meta.model,
+            FNumber: meta.aperture,
+            ExposureTime: meta.shutter,
+            ISOSpeedRatings: meta.isoSpeed,
+            FocalLength: meta.focalLength,
+            DateTime: tsToExifStr(meta.timestamp),
         }
     } catch (e) {
         return {}
@@ -388,7 +385,7 @@ function pathExt(fp) {
 }
 
 // ============ EXIF 写入（供 RAW → JPG 格式转换保留拍摄参数） ============
-// RAW 不是 JPEG，转换时走 canvas 普通编码，会丢掉 EXIF。这里用 lightdrift-libraw 读出
+// RAW 不是 JPEG，转换时走 canvas 普通编码，会丢掉 EXIF。这里用自研 LibRaw 插件读出
 // 程序展示的常见拍摄参数，重新生成一个标准的 EXIF APP1 段（FFE1），由渲染端嵌回 JPG。
 // 只保留常用字段；朝向固定为 1 —— RAW 全尺寸缓存像素已按朝向摆正，不能写回原朝向。
 

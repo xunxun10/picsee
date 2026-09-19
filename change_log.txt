@@ -15,3 +15,8 @@
 1.0.2
 - 修复打包压缩问题，修复ctrl+d失效问题
 - 修复raw转换jpg丢失exif信息问题，full缓存文件也增加exif信息
+
+1.0.3
+- 移除第三方 RAW 封装依赖 lightdrift-libraw，改为仓库内置 LibRaw 官方源码 + 自研 N-API 插件直连解码
+- 内置 zlib 与 libjpeg-turbo 源码，保留 deflate 压缩 DNG 与 JPEG 有损压缩 RAW 的解码能力
+- RAW 缓存 JPG 的缩放与编码改用 sharp
