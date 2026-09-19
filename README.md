@@ -90,9 +90,10 @@ picsee/
 ├── rawcache-worker.js         # RAW 解码 worker
 ├── native/                    # RAW 解码 N-API 插件
 │   ├── binding.gyp            # node-gyp 构建脚本
+│   ├── gen-jpeg-config.js     # 由官方模板生成 libjpeg 配置头
+│   ├── list-raw-sources.js    # 显式展开 vendored 源码清单供 gyp 编译
 │   ├── src/picsee_raw.cc      # 插件源码：直连 LibRaw C API
 │   └── deps/                  # 内置官方源码（LibRaw / zlib / libjpeg-turbo）
-├── scripts/gen-jpeg-config.js # 由官方模板生成 libjpeg 配置头
 ├── res/                       # 图标与默认图片
 └── change_log.txt             # 变更日志
 ```

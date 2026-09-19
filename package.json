@@ -4,7 +4,7 @@
   "description": "轻量看图软件",
   "main": "main.js",
   "scripts": {
-    "build:native": "node scripts/gen-jpeg-config.js && node-gyp configure -C native && node-gyp build -C native",
+    "build:native": "node native/gen-jpeg-config.js && node native/ensure-configure.js",
     "start": "npm run build:native && electron .",
     "dist": "npm run build:native && electron-builder --win --x64 --dir",
     "linux.x86": "npm run build:native && electron-builder --linux --x64 --dir",

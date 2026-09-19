@@ -19,7 +19,8 @@
 const fs = require('fs');
 const path = require('path');
 
-const JPEG_SRC = path.join(__dirname, '..', 'native', 'deps', 'libjpeg-turbo', 'src');
+// 脚本位于 native/，vendored libjpeg-turbo 以它为基准
+const JPEG_SRC = path.join(__dirname, 'deps', 'libjpeg-turbo', 'src');
 
 const IS_WINDOWS = process.platform === 'win32';
 const IS_64BIT = process.arch === 'x64' || process.arch === 'arm64';
@@ -105,6 +106,14 @@ function main() {
       throw new Error(`缺少模板文件：${tplPath}`);
     }
     const rendered = render(fs.readFileSync(tplPath, 'utf8'), file);
+    // 幂等写：内容未变就不落盘，保持 mtime 不变。
+    // 否则每次 configure 都会刷新头文件时间戳，MSBuild 的增量判断
+    // 会把所有 include jconfig.h 的 libjpeg 源文件当成“需要重编”，
+    // 导致 build 之后再 run 又触发整棵 libjpeg 重编。
+    if (fs.existsSync(outPath) && fs.readFileSync(outPath, 'utf8') === rendered) {
+      console.log(`[gen-jpeg-config] ${file} 未变化，跳过写入`);
+      continue;
+    }
     fs.writeFileSync(outPath, rendered);
     console.log(`[gen-jpeg-config] ${path.relative(process.cwd(), outPath)}`);
   }

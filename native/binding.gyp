@@ -10,26 +10,17 @@
       "target_name": "picsee_raw",
       "sources": [
         "src/picsee_raw.cc",
+        # libjpeg-turbo 3.x 运行时 8/12/16 位精度选择需要 j12init_*/j16init_* 链接符号，
+        # 本项目只做 8 位解码，用空实现 stub 补齐（见文件内注释）
+        "src/jpeg_1216_stubs.c",
 
-        "deps/zlib/*.c",
-
-        "deps/libjpeg-turbo/src/*.c",
-
-        "deps/LibRaw/src/*.cpp",
-        "deps/LibRaw/src/decoders/*.cpp",
-        "deps/LibRaw/src/decompressors/*.cpp",
-        "deps/LibRaw/src/demosaic/*.cpp",
-        "deps/LibRaw/src/integration/*.cpp",
-        "deps/LibRaw/src/metadata/*.cpp",
-        "deps/LibRaw/src/postprocessing/*.cpp",
-        "deps/LibRaw/src/preprocessing/*.cpp",
-        "deps/LibRaw/src/tables/*.cpp",
-        "deps/LibRaw/src/utils/*.cpp",
-        "deps/LibRaw/src/write/*.cpp",
-        "deps/LibRaw/src/x3f/*.cpp"
+        # gyp 的 msvs 生成器不展开通配符，源文件由脚本显式列出（见 native/list-raw-sources.js）
+        "<!@(node ./list-raw-sources.js)"
       ],
       "include_dirs": [
-        "<!@(node -p \"require('node-addon-api').include_dir\")",
+        # node-addon-api 的 include 目录：直接展开其相对路径会被 gyp 的 vcxproj 生成器
+        # 把反斜杠分隔符吃掉，因此这里用拼好的绝对路径（正斜杠）输出
+        "<!@(node -p \"require('path').resolve(require('node-addon-api').include_dir).replace(/\\\\/g, '/')\")",
         "src",
         "deps/LibRaw",
         "deps/LibRaw/libraw",
@@ -42,6 +33,9 @@
         # LibRaw 可选依赖开关；不定义 USE_LCMS/USE_LCMS2，LibRaw 会自动置 NO_LCMS
         "USE_ZLIB",
         "USE_JPEG",
+        # Windows 上静态链接 LibRaw：不定义 LIBRAW_NODLL 时头文件会把 API 声明为
+        # dllimport，编译 libraw_c_api.cpp 会报 C2491（不允许定义 dllimport 函数）
+        "LIBRAW_NODLL",
         # zlib 符号前缀隔离：zlib 与 LibRaw 编译单元都要带，避免与 Node/Electron
         # 内置 zlib 的导出符号在链接期冲突（Windows 上表现为 LNK2005）
         "Z_PREFIX",
@@ -60,7 +54,8 @@
       "msvs_settings": {
         "VCCLCompilerTool": {
           "ExceptionHandling": 1,
-          "AdditionalOptions": ["/std:c++17"]
+          # /utf-8：源文件为 UTF-8（含中文错误消息），默认代码页 936 会误解析出换行符
+          "AdditionalOptions": ["/std:c++17", "/utf-8"]
         }
       },
       # Electron 4+ 在 Windows 上必需，否则加载时报 "Module did not self-register"

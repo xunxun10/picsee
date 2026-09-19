@@ -35,8 +35,8 @@ function show_help() {
     echo "  new       小版本 +1（如 0.5.2 -> 0.5.3），末位递增"
     echo "  new major 大版本 +1（如 0.5.2 -> 0.6.0），中间位递增、末位归零"
     echo "  chg       将尚未记录的 git 提交追加到 change_log.txt（记录上次执行时间，人工调整后不会重复追加）"
-    echo "  run       本地运行应用（electron .）进行调试"
-    echo "  build     运行当前平台的构建命令"
+    echo "  run       本地运行应用（electron .）进行调试（先确保 native 插件架构正确）"
+    echo "  build     运行当前平台的构建命令（build:native + electron-builder）"
     echo "  pack      构建并打包为 zip 或分片压缩包"
     echo "  incr      生成增量更新包（基于 dist.files.md5 对比）"
     echo "  incr label  仅生成 dist.files.md5 标签文件"
@@ -127,14 +127,52 @@ function incr_version() {
 # ===== 运行 =====
 function run(){
     Info "开始本地运行应用（electron .）..."
+    _detect_platform
+    _ensure_native_arch
     cd "$S_DIR" && npm start
     CheckOption "npm start 执行失败"
 }
 
 # ===== 构建 =====
+# 记录 native 插件的架构指纹：config.gypi 里没有现成 arch 字段，
+# 用 .node 产物后缀判断上次构建的架构（x64.node / arm64.node）
+NATIVE_ARCH_MARKER="$S_DIR/native/build/.node-arch"
+
+# 在 build/pack 前调用：确保 native/build 与当前平台架构一致，
+# 跨架构复用会静默产出陈旧/错误的 .node，必须清掉重编
+function _ensure_native_arch() {
+    local want
+    case "$PLATFORM" in
+        win|linux.x86) want="x64" ;;
+        arm)           want="arm64" ;;
+    esac
+
+    local prev=""
+    if [ -f "$NATIVE_ARCH_MARKER" ]; then
+        prev=$(cat "$NATIVE_ARCH_MARKER")
+    elif [ -d "$S_DIR/native/build" ]; then
+        # 无标记文件的旧目录：检查是否残留 .node 产物
+        if ls "$S_DIR/native/build/Release/"*.node >/dev/null 2>&1; then
+            prev="unknown"
+        fi
+    fi
+
+    if [ "$prev" != "$want" ]; then
+        if [ -n "$prev" ]; then
+            Info "native 插件架构不匹配（$prev -> $want），清理 native/build 重新编译"
+        else
+            Info "首次构建 native 插件（$want）"
+        fi
+        rm -rf "$S_DIR/native/build"
+        mkdir -p "$S_DIR/native/build"
+        echo "$want" > "$NATIVE_ARCH_MARKER"
+    fi
+}
+
 function build(){
     local t_start=$(date +%s)
     _detect_platform
+    _ensure_native_arch
 
     Info "开始执行 $BUILD_CMD ..."
     cd "$S_DIR" && $BUILD_CMD
@@ -176,7 +214,7 @@ function pack(){
 
     # 构建
     Info "开始执行 $BUILD_CMD ..."
-    cd "$S_DIR" && $BUILD_CMD
+    cd "$S_DIR" && _ensure_native_arch && $BUILD_CMD
     CheckOption "$BUILD_CMD 执行失败"
 
     # 打包：按 $SPLIT_SIZE 分片
