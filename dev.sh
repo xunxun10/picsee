@@ -1,6 +1,5 @@
 #!/bin/bash
 # picsee 开发/运维脚本（由 snippet-note 的 dev.sh 迁移适配而来）
-# 在纯 Windows PowerShell 下请用 dev.ps1
 
 S_DIR=$(dirname $(readlink -m $0))
 PKG="$S_DIR/package.json"
@@ -42,6 +41,7 @@ function show_help() {
     echo "  incr label  仅生成 dist.files.md5 标签文件"
     echo "  clean     清理 dist 目录下的构建产物"
     echo "  push      将本地多个 commit squash 后推送到远程"
+    echo "  sync      将本地文件/目录 scp 到远程主机（用法: ./dev.sh sync <[user@]host[:端口]:目录> [本地路径]；不传本地路径则同步 git 变更文件含新增，端口默认 2222）"
     echo "  help      显示此帮助信息"
 }
 
@@ -395,6 +395,78 @@ function push(){
     _elapsed $t_start
 }
 
+# ===== scp 同步到远程主机 =====
+function sync(){
+    local t_start=$(date +%s)
+    local remote=$1
+    local local_path=$2
+
+    if [ -z "$remote" ]; then
+        Error "远程主机信息为必传项。用法: ./dev.sh sync <[user@]host[:端口]:目录> [本地路径]（不传本地路径则同步 git 变更文件，含新增）"
+        exit 1
+    fi
+
+    # 解析远程目标：[user@]host[:端口]:目录，端口默认 2222
+    if [[ "$remote" =~ ^([^@:]+@)?([^:@]+)(:[0-9]+)?:(.+)$ ]]; then
+        local user_prefix="${BASH_REMATCH[1]}"
+        local host="${BASH_REMATCH[2]}"
+        local port_spec="${BASH_REMATCH[3]}"
+        local remote_dir="${BASH_REMATCH[4]}"
+    else
+        Error "远程目标格式错误（应为 [user@]host[:端口]:目录）: $remote"
+        exit 1
+    fi
+    local port="${port_spec#:}"
+    port="${port:-2222}"
+    local scp_host="${user_prefix}${host}"
+
+    # 未指定本地路径：同步 git 变更文件（修改 + 新增/未跟踪），已删除文件仅提示不传输
+    if [ -z "$local_path" ]; then
+        Info "未指定本地路径，同步 git 变更文件..."
+        local files=()
+        while IFS= read -r -d '' f; do
+            # git ls-files --modified 会把已删除文件也算进去，工作树不存在的跳过
+            if [ -e "$S_DIR/$f" ]; then
+                files+=("$f")
+            fi
+        done < <(cd "$S_DIR" && git ls-files --modified --others --exclude-standard -z)
+
+        if [ ${#files[@]} -eq 0 ]; then
+            Info "没有 git 变更文件"
+        else
+            local del_count
+            del_count=$(cd "$S_DIR" && git ls-files --deleted | wc -l)
+            if [ "$del_count" -gt 0 ]; then
+                Info "检测到 ${del_count} 个已删除文件（跳过，不在远程删除）"
+            fi
+            for f in "${files[@]}"; do
+                # 不建目录，直接 scp：目标路径带上相对子目录（远程目录需已存在），~ 由远程 shell 展开
+                Info "执行: scp -P $port -r \"$S_DIR/$f\" \"$scp_host:$remote_dir/$f\""
+                scp -P "$port" -r "$S_DIR/$f" "$scp_host:$remote_dir/$f"
+                CheckOption "scp 失败: $f"
+            done
+            Info "已同步 ${#files[@]} 个文件"
+        fi
+    else
+        # 本地路径支持相对 S_DIR 的写法（如 dist/xxx.zip）
+        local src="$local_path"
+        if [ ! -e "$src" ] && [ -e "$S_DIR/$local_path" ]; then
+            src="$S_DIR/$local_path"
+        fi
+        if [ ! -e "$src" ]; then
+            Error "本地路径不存在: $local_path"
+            exit 1
+        fi
+
+        Info "执行: scp -P $port -r \"$src\" \"$scp_host:$remote_dir\""
+        scp -P "$port" -r "$src" "$scp_host:$remote_dir"
+        CheckOption "scp 失败"
+    fi
+
+    Info "同步完成"
+    _elapsed $t_start
+}
+
 # ===== 更新 changelog =====
 function chg(){
     local t_start=$(date +%s)
@@ -494,6 +566,9 @@ case "$1" in
         ;;
     push)
         push
+        ;;
+    sync)
+        sync "$2" "$3"
         ;;
     help|--help|-h)
         show_help

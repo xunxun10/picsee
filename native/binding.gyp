@@ -19,8 +19,9 @@
       ],
       "include_dirs": [
         # node-addon-api 的 include 目录：直接展开其相对路径会被 gyp 的 vcxproj 生成器
-        # 把反斜杠分隔符吃掉，因此这里用拼好的绝对路径（正斜杠）输出
-        "<!@(node -p \"require('path').resolve(require('node-addon-api').include_dir).replace(/\\\\/g, '/')\")",
+        # 把反斜杠分隔符吃掉，因此用脚本输出绝对路径（正斜杠）。
+        # 不内联 node -p 命令：反斜杠正则经 sh（Linux/ARM）转义后变成非法正则报 SyntaxError
+        "<!@(node ./get-napi-include.js)",
         "src",
         "deps/LibRaw",
         "deps/LibRaw/libraw",
