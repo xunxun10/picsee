@@ -172,9 +172,9 @@ html, body {
 /* Toast 提示 */
 #toast {
     position: absolute;
-    top: 25%;
+    top: 12px;
     left: 50%;
-    transform: translate(-50%, -50%);
+    transform: translateX(-50%);
     background: rgba(0,0,0,0.75);
     color: #eee;
     font-size: 13px;
@@ -453,3 +453,9 @@ body.fullscreen #viewport { bottom: 0; }
 ::-webkit-scrollbar-thumb { background: #c8c8c8; border-radius: 4px; }
 ::-webkit-scrollbar-thumb:hover { background: #a8a8a8; }
 ::-webkit-scrollbar-corner { background: transparent; }
+
+/* 压缩对话框质量档位说明 */
+.comp-qual-tip { margin-top: 10px; font-size: 12px; color: #777; line-height: 1.7; }
+.comp-qual-opt { display: block; cursor: pointer; }
+.comp-qual-opt:hover { color: #d29100; }
+.comp-qual-opt.on { color: #d29100; font-weight: bold; }

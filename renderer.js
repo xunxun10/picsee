@@ -9,15 +9,22 @@
     const JPG_REENCODE_Q = 0.95
 
     // 微信压缩（compressionWx）阈值，独立变量便于按需调整。
-    // WX_SHORT_SIDE：短边上限。实测微信下载图是"短边 1080"（如 1080×1620），即微信压缩的是
-    //   较短边到 1080、长边按比例跟随；先按它压，命中微信的尺寸压缩线，不会被二次缩放
-    // WX_LONG_SIDE：长边上限（更小的兜底档）；若短边 1080 后仍超体积，再压到长边 1080
-    // WX_TARGET_BYTES：目标体积上限，尽量压在微信的大小自动压缩线（约 500KB）以下
-    // WX_QUALITY：固定压缩质量
-    const WX_SHORT_SIDE = 1080
-    const WX_LONG_SIDE = 1080
+    // 微信压缩策略（目标 ≤500KB）：
+    //   WX_WIDTH_HIGH：主宽度档 1440。
+    //   WX_WIDTH_LOW：主档仍超体积时的应急宽度档 1080。
+    //   WX_TARGET_BYTES：目标体积上限（500KB）。
+    //   WX_QUALITY：常规压缩质量。
+    //   WX_QUALITY_STEPS：宽度 1080 后仍超体积，回到宽度 1440 依次尝试的更低质量档，取首个达标体积
+    //   降档顺序：宽度1440 → 宽度1080 → 宽度1440·质83 → 宽度1440·质80
+    const WX_WIDTH_HIGH = 1440   // 主宽度档（微信常见被压档）
+    const WX_WIDTH_LOW = 1080    // 超阈值时的应急宽度档
     const WX_TARGET_BYTES = 500 * 1024
-    const WX_QUALITY = 90
+    const WX_QUALITY = 85
+    const WX_QUALITY_STEPS = [0.83, 0.80]
+    // 尺寸缩小后的补偿：轻微锐化（缩小会损失细节/锐度，值越大越锐，0 关闭）+
+    // 轻微对比度增强（弥补缩小带来的发灰，值越大越明显，0 关闭）
+    const WX_SHARPEN_AMOUNT = 0.6
+    const WX_CONTRAST_AMOUNT = 0.08
 
     // ============ 全局状态 ============
     const State = {
@@ -1688,13 +1695,14 @@
         info('批量压缩已完成！本次共压缩 ' + done + ' 张图片')
     }
 
-    // 微信压缩：仅 jpg/jpeg，固定质量 90。逐轮收紧尺寸：先短边 1080（微信同款），
-    // 仍超体积再压长边 1080，两轮都不达标则提示可能被微信自动压缩。输出到 compressedwx。
+    // 微信压缩：仅 jpg/jpeg。逐档收紧：先压宽度 1440，仍超压宽度 1080，
+    // 再超则回到宽度 1440 按 83→80 质量依次降档，压缩到约 500KB。
+    // 四档都不达标则提示可能被微信自动压缩。输出到 compressedwx。
     // isSingle=true 仅压当前图片，false 批量压整个文件夹的 jpg。
     async function compressionWx(isSingle, quality) {
         if (!hasAnyImage()) { info('请先打开一张图片进行浏览'); return }
-        const shortSide = WX_SHORT_SIDE
-        const longSide = WX_LONG_SIDE
+        const widthHigh = WX_WIDTH_HIGH
+        const widthLow = WX_WIDTH_LOW
         const targetBytes = WX_TARGET_BYTES
         const q = Math.max(1, Math.min(100, quality || WX_QUALITY)) / 100
         let targets
@@ -1708,6 +1716,7 @@
         }
         let done = 0
         let overLimit = 0
+        const usedStages = new Set() // 本次批量实际用到的档位（去重）
         for (let i = 0; i < targets.length; i++) {
             const file = targets[i]
             try {
@@ -1715,36 +1724,68 @@
                 const c = document.createElement('canvas')
                 c.width = im.naturalWidth, c.height = im.naturalHeight
                 c.getContext('2d').drawImage(im, 0, 0, c.width, c.height)
-                // 第1轮：压短边到 1080（微信同款），仍超则继续
-                let dataUrl = canvasFit(c, 'short', shortSide).toDataURL('image/jpeg', q)
-                // 第2轮：压长边到 1080（更小兜底），仍超则计入超限
+                // 第1档：压宽度到 1440（并等比缩放），仍超体积则继续降档
+                let curCanvas = canvasFit(c, 'width', widthHigh)
+                let finalCanvas = curCanvas
+                let finalQ = q
+                let dataUrl = curCanvas.toDataURL('image/jpeg', q)
+                let stage = { kind: 'size', hint: '宽度' + widthHigh }
+                // 第2档：超体积则压宽度到 1080（应急档）
                 if (dataUrlBytes(dataUrl) > targetBytes) {
-                    dataUrl = canvasFit(c, 'long', longSide).toDataURL('image/jpeg', q)
+                    curCanvas = canvasFit(c, 'width', widthLow)
+                    finalCanvas = curCanvas
+                    dataUrl = curCanvas.toDataURL('image/jpeg', q)
+                    stage = { kind: 'size', hint: '宽度' + widthLow }
+                }
+                // 第3/4档：1080 仍超，回到宽度 1440 依次按更低质量档（83→80）重编码，取首个达标体积
+                if (dataUrlBytes(dataUrl) > targetBytes) {
+                    const cur1440 = canvasFit(c, 'width', widthHigh)
+                    finalCanvas = cur1440
+                    for (const qu of WX_QUALITY_STEPS) {
+                        finalQ = qu
+                        dataUrl = cur1440.toDataURL('image/jpeg', qu)
+                        stage = { kind: 'quality', hint: Math.round(qu * 100) + '' }
+                        if (dataUrlBytes(dataUrl) <= targetBytes) break
+                    }
+                }
+                // 发生过尺寸缩小则补偿锐化+对比度（缩小会损失锐度、发灰），再按最终质量重编码
+                if (finalCanvas.width < c.width || finalCanvas.height < c.height) {
+                    sharpen(finalCanvas, WX_SHARPEN_AMOUNT, WX_CONTRAST_AMOUNT)
+                    dataUrl = finalCanvas.toDataURL('image/jpeg', finalQ)
                 }
                 const isOver = dataUrlBytes(dataUrl) > targetBytes
                 if (isOver) overLimit++
+                if (!isSingle) usedStages.add(wxStageDesc(stage))
                 const folder = file.substring(0, file.lastIndexOf('\\'))
                 const base = fileBase(file).replace(/\.[^.]*$/, '')
                 API.CallSys({ type: 'save-format', path: folder + '\\compressedwx\\' + base + '.jpg', dataUrl: dataUrl })
                 done++
                 if (isSingle) {
-                    info(isOver ? '微信压缩完成（仍可能被微信自动压缩）:' + fileBase(file) : '微信压缩完成：' + fileBase(file))
+                    info((isOver ? '微信压缩完成（仍可能被微信自动压缩）:' : '微信压缩完成：') + fileBase(file) +
+                        ' ' + wxStageDesc(stage))
                     return
                 }
             } catch (e) { /* 跳过无法解码的图片 */ }
             info('正在进行微信压缩,请稍等...' + (i + 1) + '/' + targets.length)
         }
         if (overLimit > 0) {
-            info('有 ' + overLimit + ' 张图片压缩至短边/长边 1080 后仍超过 ' + Math.round(targetBytes / 1024) + 'KB，可能仍会被微信自动压缩')
+            info('有 ' + overLimit + ' 张图片压缩后仍超过 ' + Math.round(targetBytes / 1024) + 'KB，可能仍会被微信自动压缩：' +
+                [...usedStages].join('、'))
         } else {
-            info('适应微信朋友圈的批量压缩已完成！本次共压缩 ' + done + ' 张图片')
+            info('适应微信朋友圈的批量压缩已完成！本次共压缩 ' + done + ' 张图片：' +
+                [...usedStages].join('、'))
         }
     }
 
-    // 等比缩放到指定边达到 val（edge='short' 短边 / 'long' 长边），返回新 canvas；已达标则原样返回
+    // 将单张压缩实际使用的档位转成可读描述（压缩尺寸：xxx / 压缩质量：xxx）
+    function wxStageDesc(st) {
+        return (st.kind === 'quality' ? '压缩质量' : '压缩尺寸') + '：' + st.hint
+    }
+
+    // 等比缩放到指定边达到 val（edge='short' 短边 / 'long' 长边 / 'width' 宽度），返回新 canvas；已达标则原样返回
     function canvasFit(c, edge, val) {
         const w = c.width, h = c.height
-        const cur = edge === 'long' ? Math.max(w, h) : Math.min(w, h)
+        const cur = edge === 'long' ? Math.max(w, h) : edge === 'width' ? w : Math.min(w, h)
         if (cur <= val) return c
         const t = val / cur
         // 用 round 而非 floor：浮点误差可能让收敛边算出 1079.999…，floor 会截成 1079
@@ -1761,6 +1802,38 @@
         const b64 = dataUrl.substring(i + 7)
         const pad = b64.endsWith('==') ? 2 : (b64.endsWith('=') ? 1 : 0)
         return Math.floor(b64.length * 3 / 4) - pad
+    }
+
+    // 原地震锐化 + 轻微对比度：3x3 卷积（中心 1+amount，四邻 -amount/4），卷积后对像素做对比度拉伸
+    // （(v-128)*(1+contrast)+128）。amount 与 contrast 均为 0 则原样返回。用于"尺寸缩小后补偿细节"。
+    function sharpen(canvas, amount, contrast) {
+        if (!amount && !contrast) return
+        const t = canvas.getContext('2d')
+        const w = canvas.width, h = canvas.height
+        const img = t.getImageData(0, 0, w, h)
+        const src = img.data
+        const out = t.createImageData(w, h)
+        const dst = out.data
+        const cw = 1 + amount
+        const ng = amount / 4
+        const cf = 1 + contrast
+        for (let y = 0; y < h; y++) {
+            for (let x = 0; x < w; x++) {
+                const i = (y * w + x) * 4
+                for (let ch = 0; ch < 3; ch++) {
+                    let k = i + ch
+                    let v = cw * src[k]
+                        - ng * (src[k - 4] || src[k])
+                        - ng * (src[k + 4] || src[k])
+                        - ng * (src[k - 4 * w] || src[k])
+                        - ng * (src[k + 4 * w] || src[k])
+                    if (contrast) v = (v - 128) * cf + 128
+                    dst[k] = Math.max(0, Math.min(255, v))
+                }
+                dst[i + 3] = src[i + 3]
+            }
+        }
+        t.putImageData(out, 0, 0)
     }
 
     // 旋转保存
@@ -2625,8 +2698,24 @@
     // 对话框
     const D = (id) => document.getElementById(id)
     function showCompressionDlg(isSingle) {
+        // 打开时同步高亮当前质量对应的档位
+        syncQualTip()
         D('dlg-compression').classList.remove('hidden')
         D('dlg-compression').dataset.single = isSingle ? '1' : '0'
+    }
+    // 点击质量档位说明项，把对应质量填入输入框并高亮（事件委托，只绑定一次）
+    D('dlg-compression').addEventListener('click', (e) => {
+        const opt = e.target.closest('.comp-qual-opt')
+        if (!opt) return
+        D('comp-quality').value = opt.dataset.q
+        syncQualTip()
+    })
+    D('comp-quality').addEventListener('input', syncQualTip)
+    function syncQualTip() {
+        const v = D('comp-quality').value
+        D('dlg-compression').querySelectorAll('.comp-qual-opt').forEach(el => {
+            el.classList.toggle('on', el.dataset.q === v)
+        })
     }
     D('comp-ok').onclick = () => {
         const q = parseInt(D('comp-quality').value, 10) || 95
